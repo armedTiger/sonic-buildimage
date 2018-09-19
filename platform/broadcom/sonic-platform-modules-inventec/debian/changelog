@@ -1,4 +1,19 @@
 sonic-inventec-platform-modules (1.1.0) unstable; urgency=low
+  * Add support for Inventec d7264
+
+ -- alvin lin <lin.alvin@inventec.com>  Thu, 12 Jul 2018 16:00:00 +0800
+
+sonic-inventec-platform-modules (1.1.0) unstable; urgency=low
+  * Add support for Inventec d6556
+
+ -- alvin lin <lin.alvin@inventec.com>  Thu, 12 Jul 2018 16:00:00 +0800
+
+sonic-inventec-platform-modules (1.1.0) unstable; urgency=low
+  * Add support for Inventec d6254
+
+ -- alvin lin <lin.alvin@inventec.com>  Wed, 09 May 2018 16:00:00 +0800
+
+sonic-inventec-platform-modules (1.1.0) unstable; urgency=low
   * Add support for Inventec d7054
 
  -- developer <swsp@inventec.com>  Tue, 18 Jul 2017 16:30:45 +0800

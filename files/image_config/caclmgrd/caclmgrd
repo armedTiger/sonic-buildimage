@@ -11,6 +11,7 @@
 #
 
 try:
+    import ipaddr as ipaddress
     import os
     import subprocess
     import sys
@@ -88,6 +89,32 @@ class ControlPlaneAclManager(object):
             if proc.returncode != 0:
                 log_error("Error running command '{}'".format(cmd))
 
+    def parse_int_to_tcp_flags(self, hex_value):
+        tcp_flags_str = ""
+        if hex_value & 0x01:
+            tcp_flags_str += "FIN,"
+        if hex_value & 0x02:
+            tcp_flags_str += "SYN,"
+        if hex_value & 0x04:
+            tcp_flags_str += "RST,"
+        if hex_value & 0x08:
+            tcp_flags_str += "PSH,"
+        if hex_value & 0x10:
+            tcp_flags_str += "ACK,"
+        if hex_value & 0x20:
+            tcp_flags_str += "URG,"
+        # iptables doesn't handle the flags below now. It has some special keys for it:
+        #   --ecn-tcp-cwr   This matches if the TCP ECN CWR (Congestion Window Received) bit is set.
+        #   --ecn-tcp-ece   This matches if the TCP ECN ECE (ECN Echo) bit is set.
+        # if hex_value & 0x40:
+        #     tcp_flags_str += "ECE,"
+        # if hex_value & 0x80:
+        #     tcp_flags_str += "CWR,"
+
+        # Delete the trailing comma
+        tcp_flags_str = tcp_flags_str[:-1]
+        return tcp_flags_str
+
     def get_acl_rules_and_translate_to_iptables_commands(self):
         """
         Retrieves current ACL tables and rules from Config DB, translates
@@ -113,90 +140,101 @@ class ControlPlaneAclManager(object):
         # Add iptables command to delete all non-default chains
         iptables_cmds.append("iptables -X")
 
+        # Add same set of commands for ip6tables
+        iptables_cmds.append("ip6tables -P INPUT ACCEPT")
+        iptables_cmds.append("ip6tables -P FORWARD ACCEPT")
+        iptables_cmds.append("ip6tables -P OUTPUT ACCEPT")
+        iptables_cmds.append("ip6tables -F")
+        iptables_cmds.append("ip6tables -X")
+
+        # Add iptables commands to allow all IPv4 and IPv6 traffic from localhost
+        iptables_cmds.append("iptables -A INPUT -s 127.0.0.1 -i lo -j ACCEPT")
+        iptables_cmds.append("ip6tables -A INPUT -s ::1 -i lo -j ACCEPT")
+
         # Get current ACL tables and rules from Config DB
         self._tables_db_info = self.config_db.get_table(self.ACL_TABLE)
         self._rules_db_info = self.config_db.get_table(self.ACL_RULE)
 
         # Walk the ACL tables
         for (table_name, table_data) in self._tables_db_info.iteritems():
+
+            table_ip_version = None
+
             # Ignore non-control-plane ACL tables
             if table_data["type"] != self.ACL_TABLE_TYPE_CTRLPLANE:
                 continue
 
-            acl_service = table_data["service"]
+            acl_services = table_data["services"]
 
-            if acl_service not in self.ACL_SERVICES:
-                log_warning("Ignoring control plane ACL '{}' with unrecognized service '{}'"
-                        .format(table_name, acl_service))
-                continue
-
-            log_info("Translating ACL rules for control plane ACL '{}' (service: '{}')"
-                    .format(table_name, acl_service))
-
-            # Obtain default IP protocol(s) and destination port(s) for this service
-            ip_protocols = self.ACL_SERVICES[acl_service]["ip_protocols"]
-            dst_ports = self.ACL_SERVICES[acl_service]["dst_ports"]
-
-            acl_rules = {}
-
-            for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.iteritems():
-                if rule_table_name == table_name:
-                    acl_rules[rule_props["PRIORITY"]] = rule_props
-
-            # For each ACL rule in this table (in descending order of priority)
-            for priority in sorted(acl_rules.iterkeys(), reverse=True):
-                rule_props = acl_rules[priority]
-
-                if "PACKET_ACTION" not in rule_props:
-                    log_error("ACL rule does not contain PACKET_ACTION property")
+            for acl_service in acl_services:
+                if acl_service not in self.ACL_SERVICES:
+                    log_warning("Ignoring control plane ACL '{}' with unrecognized service '{}'"
+                            .format(table_name, acl_service))
                     continue
 
-                # If the rule contains an IP protocol, we will use it.
-                # Otherwise, we will apply the rule to the default
-                # protocol(s) for this ACL service
-                if "IP_PROTOCOL" in rule_props:
-                    ip_protocols = [rule_props["IP_PROTOCOL"]]
+                log_info("Translating ACL rules for control plane ACL '{}' (service: '{}')"
+                        .format(table_name, acl_service))
 
-                for ip_protocol in ip_protocols:
-                    for dst_port in dst_ports:
-                        rule_cmd = "iptables -A INPUT -p {}".format(ip_protocol)
+                # Obtain default IP protocol(s) and destination port(s) for this service
+                ip_protocols = self.ACL_SERVICES[acl_service]["ip_protocols"]
+                dst_ports = self.ACL_SERVICES[acl_service]["dst_ports"]
 
-                        if "SRC_IP" in rule_props and rule_props["SRC_IP"]:
-                            rule_cmd += " -s {}".format(rule_props["SRC_IP"])
+                acl_rules = {}
 
-                        rule_cmd += " --dport {}".format(dst_port)
+                for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.iteritems():
+                    if rule_table_name == table_name:
+                        acl_rules[rule_props["PRIORITY"]] = rule_props
 
-                        # If there are TCP flags present, append them
-                        if "TCP_FLAGS" in rule_props and rule_props["TCP_FLAGS"]:
-                            tcp_flags = int(rule_props["TCP_FLAGS"], 16)
+                        # If we haven't determined the IP version for this ACL table yet,
+                        # try to do it now. We determine heuristically based on whether the
+                        # src IP is an IPv4 or IPv6 address.
+                        if not table_ip_version and "SRC_IP" in rule_props and rule_props["SRC_IP"]:
+                            ip_addr = ipaddress.IPAddress(rule_props["SRC_IP"].split("/")[0])
+                            if isinstance(ip_addr, ipaddress.IPv6Address):
+                                table_ip_version = 6
+                            elif isinstance(ip_addr, ipaddress.IPv4Address):
+                                table_ip_version = 4
 
-                            if tcp_flags > 0:
-                                rule_cmd += " --tcp-flags "
+                # If we were unable to determine whether this ACL table contains
+                # IPv4 or IPv6 rules, log a message and skip processing this table.
+                if not table_ip_version:
+                    log_warning("Unable to determine if ACL table '{}' contains IPv4 or IPv6 rules. Skipping table..."
+                            .format(table_name))
+                    continue
 
-                                if tcp_flags & 0x01:
-                                    rule_cmd += "FIN,"
-                                if tcp_flags & 0x02:
-                                    rule_cmd += "SYN,"
-                                if tcp_flags & 0x04:
-                                    rule_cmd += "RST,"
-                                if tcp_flags & 0x08:
-                                    rule_cmd += "PSH,"
-                                if tcp_flags & 0x10:
-                                    rule_cmd += "ACK,"
-                                if tcp_flags & 0x20:
-                                    rule_cmd += "URG,"
-                                if tcp_flags & 0x40:
-                                    rule_cmd += "ECE,"
-                                if tcp_flags & 0x80:
-                                    rule_cmd += "CWR,"
+                # For each ACL rule in this table (in descending order of priority)
+                for priority in sorted(acl_rules.iterkeys(), reverse=True):
+                    rule_props = acl_rules[priority]
 
-                                # Delete the trailing comma
-                                rule_cmd = rule_cmd[:-1]
+                    if "PACKET_ACTION" not in rule_props:
+                        log_error("ACL rule does not contain PACKET_ACTION property")
+                        continue
 
-                        # Append the packet action as the jump target
-                        rule_cmd += " -j {}".format(rule_props["PACKET_ACTION"])
+                    # Apply the rule to the default protocol(s) for this ACL service
+                    for ip_protocol in ip_protocols:
+                        for dst_port in dst_ports:
+                            rule_cmd = "ip6tables" if table_ip_version == 6 else "iptables"
+                            rule_cmd += " -A INPUT -p {}".format(ip_protocol)
 
-                        iptables_cmds.append(rule_cmd)
+                            if "SRC_IP" in rule_props and rule_props["SRC_IP"]:
+                                rule_cmd += " -s {}".format(rule_props["SRC_IP"])
+
+                            rule_cmd += " --dport {}".format(dst_port)
+
+                            # If there are TCP flags present and ip protocol is TCP, append them
+                            if ip_protocol == "tcp" and "TCP_FLAGS" in rule_props and rule_props["TCP_FLAGS"]:
+                                tcp_flags, tcp_flags_mask = rule_props["TCP_FLAGS"].split("/")
+
+                                tcp_flags = int(tcp_flags, 16)
+                                tcp_flags_mask = int(tcp_flags_mask, 16)
+
+                                if tcp_flags_mask > 0:
+                                    rule_cmd += " --tcp-flags {mask} {flags}".format(mask = self.parse_int_to_tcp_flags(tcp_flags_mask), flags =  self.parse_int_to_tcp_flags(tcp_flags))
+
+                            # Append the packet action as the jump target
+                            rule_cmd += " -j {}".format(rule_props["PACKET_ACTION"])
+
+                            iptables_cmds.append(rule_cmd)
 
         return iptables_cmds
 

@@ -27,12 +27,12 @@ DEFAULT_USERNAME = admin
 DEFAULT_PASSWORD = YourPaSsWoRd
 
 # ENABLE_DHCP_GRAPH_SERVICE - specify the source of minigraph to generate configuration file.
-# If set to y SONiC will get the minigraph from graph service. Graph service URL need to be 
+# If set to y SONiC will get the minigraph from graph service. Graph service URL need to be
 # passed through DHCP option 225.
 # If not set (default behavior) the default minigraph built into the image will be used.
 # ENABLE_DHCP_GRAPH_SERVICE = y
 
-# SHUTDOWN_BGP_ON_START - if set to y all bgp sessions will be in admin down state when 
+# SHUTDOWN_BGP_ON_START - if set to y all bgp sessions will be in admin down state when
 # bgp service starts.
 # SHUTDOWN_BGP_ON_START = y
 
@@ -40,9 +40,9 @@ DEFAULT_PASSWORD = YourPaSsWoRd
 # by default for TOR switch
 # ENABLE_PFCWD_ON_START = y
 
-# SONIC_CONFIG_DEBUG - install debug packages
+# SONIC_INSTALL_DEBUG_TOOLS - installs debugging tools in baseline docker
 # Uncomment next line to enable:
-# SONIC_CONFIG_DEBUG = y
+# SONIC_INSTALL_DEBUG_TOOLS = y
 
 # SONIC_ROUTING_STACK - specify the routing-stack being elected to drive SONiC's control-plane.
 # Quagga will be the default routing-stack for all the SONiC platforms. Other supported
@@ -52,6 +52,22 @@ SONIC_ROUTING_STACK = quagga
 # ENABLE_SYNCD_RPC - build docker-syncd with rpc packages for testing purposes.
 # Uncomment to enable:
 # ENABLE_SYNCD_RPC = y
- 
+
 # Enable Origanization Extensions - Specific to the deployment scenarios of the Organization
 ENABLE_ORGANIZATION_EXTENSIONS = y
+
+# Debugging option allows sonic debian packages to get built including symbols
+# information. Profiling option, disables compiler optimizations (-O0) as well
+# as includes symbols information. Given that 'profiling' option is a superset
+# of 'debugging' one, user should only enable either one option or the other --
+# if both options are enabled, the 'profiling' one will prevail.
+#SONIC_DEBUGGING_ON = y
+#SONIC_PROFILING_ON = y
+
+# ENABLE_SYSTEM_TELEMETRY - build docker-sonic-telemetry for system telemetry support
+# ENABLE_SYSTEM_TELEMETRY = y
+
+# DEFAULT_KERNEL_PROCURE_METHOD - default method for obtaining kernel
+#   build:    build kernel from source
+#   download: download pre-built kernel from Azure storage.
+DEFAULT_KERNEL_PROCURE_METHOD = build

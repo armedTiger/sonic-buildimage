@@ -41,6 +41,9 @@ get_flash_dev() {
 wait_for_root_dev() {
     local try_rounds=30
     while [ $try_rounds -gt 0 ]; do
+        if blkid | sed 's/"//g' | grep -q "$root_dev"; then
+            return 0
+        fi
         if [ -e "$root_dev" ]; then
             return 0
         fi
@@ -105,6 +108,7 @@ for x in "$@"; do
         loop=*)
             x1="${x#loop=}"
             image_dir="${x1%/*}"
+            ;;
     esac
 done
 root_dev="$ROOT"
@@ -168,18 +172,20 @@ umount "$root_mnt"
 
 #### Lines below will modify the root file system, so any failure will be trapped to shell for manual interventions.
 
-# Create a new partition table (content in flash_dev will be deleted)
-err_msg="Error: repartitioning $flash_dev failed"
-cmd="echo ';' | sfdisk $flash_dev || (sleep 3; blockdev --rereadpt $flash_dev && fdisk -l $flash_dev | grep -q ${root_dev}.*Linux)"
-run_cmd "$cmd" "$err_msg"
+if [ $(echo -n "$root_dev" | tail -c 1) == "1" ]; then
+    # Create a new partition table (content in flash_dev will be deleted)
+    err_msg="Error: repartitioning $flash_dev failed"
+    cmd="echo ';' | sfdisk $flash_dev || (sleep 3; blockdev --rereadpt $flash_dev && fdisk -l $flash_dev | grep -q ${root_dev}.*Linux)"
+    run_cmd "$cmd" "$err_msg"
+fi
 
-sleep 5
+sleep 2
 err_msg="Error: timeout in waiting for $root_dev after repartition"
 cmd="wait_for_root_dev"
 run_cmd "$cmd" "$err_msg"
 
 err_msg="Error: formatting to ext4 failed"
-cmd="mke2fs -t ext4 -m2 -F -O '^huge_file' $root_dev"
+cmd="mke2fs -t ext4 -F -O '^huge_file,^metadata_csum' $root_dev"
 run_cmd "$cmd" "$err_msg"
 
 err_msg="Error: mounting $root_dev to $root_mnt failed"

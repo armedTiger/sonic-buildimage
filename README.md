@@ -1,15 +1,25 @@
-*master*: Broadcom: [![Broadcom](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-all)
+*master*:
+Barefoot: [![Barefoot](https://sonic-jenkins.westus2.cloudapp.azure.com/job/barefoot/job/buildimage-bf-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/barefoot/job/buildimage-bf-all)
+Broadcom: [![Broadcom](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-all)
 Mellanox: [![Mellanox](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-all)
 Nephos: [![Nephos](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-all)
 P4: [![P4](https://sonic-jenkins.westus2.cloudapp.azure.com/job/p4/job/buildimage-p4-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/p4/job/buildimage-p4-all)
 VS: [![VS](https://sonic-jenkins.westus2.cloudapp.azure.com/job/vs/job/buildimage-vs-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/vs/job/buildimage-vs-all)
 
+*201712*:
+Broadcom: [![Broadcom](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-201712/)
+Barefoot: [![Mellanox](https://sonic-jenkins.westus2.cloudapp.azure.com/job/barefoot/job/buildimage-bf-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/barefoot/job/buildimage-bf-201712/)
+Centec: [![Centec](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-201712/)
+Nephos: [![Nephos](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-201712/)
+Marvell: [![Marvell](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-201712/)
+Mellanox: [![Mellanox](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-201712/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-201712/)
+
 *201709*: 
 Broadcom: [![Broadcom](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-201709/)
-Cavium: [![Cavium](https://sonic-jenkins.westus2.cloudapp.azure.com/job/cavium/job/buildimage-cavm-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/cavium/job/buildimage-cavm-all/)
-Centec: [![Centec](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-all/)
+Cavium: [![Cavium](https://sonic-jenkins.westus2.cloudapp.azure.com/job/cavium/job/buildimage-cavm-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/cavium/job/buildimage-cavm-201709/)
+Centec: [![Centec](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/centec/job/buildimage-centec-201709/)
 Nephos: [![Nephos](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/nephos/job/buildimage-nephos-201709/)
-Marvell: [![Marvell](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-all/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-all/)
+Marvell: [![Marvell](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/marvell/job/buildimage-mrvl-201709/)
 Mellanox: [![Mellanox](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-201709/badge/icon)](https://sonic-jenkins.westus2.cloudapp.azure.com/job/mellanox/job/buildimage-mlnx-201709/)
 
 # sonic-buildimage
@@ -37,18 +47,26 @@ To clone the code repository recursively, assuming git version 1.9 or newer:
 
 To build SONiC installer image and docker images, run the following commands:
 
+    # Ensure the 'overlay' module is loaded on your development system
+    sudo modprobe overlay
+
+    # Enter the source directory
     cd sonic-buildimage
 
     # (Optional) Checkout a specific branch. By default, it uses master branch
     git checkout [branch_name]
 
-    # Execute make init once after cloning the repo, or fetched remote repo with submodule updates
+    # Execute make init once after cloning the repo, or after fetching remote repo with submodule updates
     make init
 
     # Execute make configure once to configure ASIC
     make configure PLATFORM=[ASIC_VENDOR]
 
-    make
+    # Build Debian Stretch required targets (Manual execution optional; will also be executed as part of the build)
+    BLDENV=stretch make stretch
+
+    # Build SONiC image
+    make all
 
  **NOTE**:
 
@@ -70,11 +88,13 @@ The SONiC installer contains all docker images needed. SONiC uses one image for 
 For Broadcom ASIC, we build ONIE and EOS image. EOS image is used for Arista devices, ONIE image is used for all other Broadcom ASIC based devices. 
 
     make configure PLATFORM=broadcom
+    # build debian stretch required targets
+    BLDENV=stretch make stretch
     # build ONIE image
     make target/sonic-broadcom.bin
     # build EOS image
     make target/sonic-aboot-broadcom.swi
- 
+
 You may find the rules/config file useful. It contains configuration options for the build process, like adding more verbosity or showing dependencies, username and password for base image etc.
 
 Every docker image is built and saved to target/ directory.

@@ -1,0 +1,34 @@
+FROM docker-config-engine
+
+ARG docker_container_name
+RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%syslogtag%/;" /etc/rsyslog.conf
+
+## Make apt-get non-interactive
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update
+
+RUN apt-get install -f -y libdbus-1-3 libdaemon0 libjansson4
+
+## Install redis-tools dependencies
+## TODO: implicitly install dependencies
+RUN apt-get -y install libjemalloc1
+
+COPY \
+{% for deb in docker_sonic_telemetry_debs.split(' ') -%}
+debs/{{ deb }}{{' '}}
+{%- endfor -%}
+debs/
+
+RUN dpkg -i \
+{% for deb in docker_sonic_telemetry_debs.split(' ') -%}
+debs/{{ deb }}{{' '}}
+{%- endfor %}
+
+COPY ["start.sh", "telemetry.sh", "dialout.sh", "/usr/bin/"]
+COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
+
+RUN apt-get clean -y; apt-get autoclean -y; apt-get autoremove -y
+RUN rm -rf /debs
+
+ENTRYPOINT ["/usr/bin/supervisord"]

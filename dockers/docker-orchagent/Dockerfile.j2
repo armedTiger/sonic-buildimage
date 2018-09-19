@@ -1,5 +1,8 @@
 FROM docker-config-engine
 
+ARG docker_container_name
+RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%syslogtag%/;" /etc/rsyslog.conf
+
 ## Make apt-get non-interactive
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -7,9 +10,12 @@ RUN apt-get update
 
 RUN apt-get install -f -y ifupdown arping libdbus-1-3 libdaemon0 libjansson4
 
+RUN apt-get install -f -y ndisc6
 ## Install redis-tools dependencies
 ## TODO: implicitly install dependencies
 RUN apt-get -y install libjemalloc1
+
+RUN apt-get install -y libelf1 libmnl0
 
 COPY \
 {% for deb in docker_orchagent_debs.split(' ') -%}
@@ -27,6 +33,7 @@ RUN apt-get clean -y; apt-get autoclean -y; apt-get autoremove -y
 RUN rm -rf /debs
 
 COPY ["files/arp_update", "/usr/bin"]
+COPY ["enable_counters.py", "/usr/bin"]
 COPY ["start.sh", "orchagent.sh", "swssconfig.sh", "/usr/bin/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
 

@@ -21,6 +21,17 @@ function postStartAction()
         rm -fr /host/fast-reboot
     fi
     docker exec swss touch /ready   # signal swssconfig.sh to go
+{%- elif docker_container_name == "pmon" %}
+
+    DEVPATH="/usr/share/sonic/device"
+    REBOOT="platform_reboot"
+    PSENSOR="/usr/local/bin/platform_sensors.py"
+    if [ -d ${DEVPATH}/${PLATFORM} ] && [ -f $PSENSOR ]; then
+        exist=`docker exec -i pmon ls /usr/bin/platform_sensors.py "$@" 2>/dev/null`
+        if [ -z "$exist" ]; then
+            docker cp $PSENSOR pmon:/usr/bin/
+        fi
+    fi
 {%- elif docker_container_name == "snmp" %}
     docker exec -i database redis-cli -n 6 HSET 'DEVICE_METADATA|localhost' chassis_serial_number $(decode-syseeprom -s)
 {%- else %}
@@ -52,7 +63,7 @@ start() {
 
         # docker created with a different HWSKU, remove and recreate
         echo "Removing obsolete {{docker_container_name}} container with HWSKU $DOCKERMOUNT"
-        docker rm {{docker_container_name}}
+        docker rm -f {{docker_container_name}}
     fi
 
 {%- if docker_container_name == "database" %}
@@ -64,6 +75,13 @@ start() {
 {%- if '--log-driver=json-file' in docker_image_run_opt or '--log-driver' not in docker_image_run_opt %}
         --log-opt max-size=2M --log-opt max-file=5 \
 {%- endif %}
+{%- if docker_container_name == "syncd" and sonic_asic_platform == "mellanox" %}
+        -e SX_SNIFFER_ENABLE \
+        -e SX_SNIFFER_TARGET \
+        -e PRM_SNIFFER \
+        -e PRM_SNIFFER_FILE_PATH \
+        -v /var/log/mellanox/sniffer:/var/log/mellanox/sniffer:rw \
+{%- endif %}
         -v /var/run/redis:/var/run/redis:rw \
         -v /usr/share/sonic/device/$PLATFORM:/usr/share/sonic/platform:ro \
 {%- if docker_container_name != "database" %}
@@ -71,7 +89,10 @@ start() {
 {%- endif %}
         --tmpfs /tmp \
         --tmpfs /var/tmp \
-        --name={{docker_container_name}} {{docker_image_name}}:latest
+        --name={{docker_container_name}} {{docker_image_name}}:latest || {
+            echo "Failed to docker run" >&1
+            exit 4
+    }
 
     postStartAction
 }

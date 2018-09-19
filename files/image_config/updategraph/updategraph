@@ -44,9 +44,6 @@ if [ -f /tmp/pending_config_migration ]; then
     if [ "$enabled" = "true" ]; then
         echo "Use minigraph.xml from old system..."
         cp /etc/sonic/old_config/minigraph.xml /etc/sonic/
-        if [ -f /etc/sonic/old_config/init_cfg.json ]; then
-            cp /etc/sonic/old_config/init_cfg.json /etc/sonic/
-        fi
         if [ -f /etc/sonic/old_config/snmp.yml ]; then
             cp /etc/sonic/old_config/snmp.yml /etc/sonic/
         fi
@@ -66,12 +63,14 @@ if [ -f /tmp/pending_config_migration ]; then
     exit 0
 fi
 
-if [ -f /tmp/pending_config_initialization ] && [ "$enabled" != "true" ]; then 
-    copy_default_minigraph
-    reload_minigraph
-    sonic-cfggen -d --print-data > /etc/sonic/config_db.json
+if [ -f /tmp/pending_config_initialization ]; then
     rm -f /tmp/pending_config_initialization
-    exit 0
+    if [ "$enabled" != "true" ]; then 
+        copy_default_minigraph
+        reload_minigraph
+        sonic-cfggen -d --print-data > /etc/sonic/config_db.json
+        exit 0
+    fi
 fi
 
 if [ "$enabled" = "reload_only" ]; then
@@ -104,6 +103,9 @@ if [ "$src" = "dhcp" ]; then
     fi
     if [ "`cat /tmp/dhcp_graph_url`" = "N/A" ]; then
         echo "'N/A' found in DHCP response. Skipping graph update and generating an empty configuration."
+        if [ ! -f /etc/sonic/minigraph.xml ]; then
+            copy_default_minigraph
+        fi
         echo '{"DEVICE_METADATA":' > /tmp/device_meta.json
         sonic-cfggen -H -m /etc/sonic/minigraph.xml --var-json DEVICE_METADATA >> /tmp/device_meta.json
         echo '}' >> /tmp/device_meta.json

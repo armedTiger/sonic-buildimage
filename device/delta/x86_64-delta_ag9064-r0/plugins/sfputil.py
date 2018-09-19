@@ -120,7 +120,7 @@ class SfpUtil(SfpUtilBase):
             reg_value = reg_value & ~mask
 
         # Convert our register value back to a hex string and write back
-        content = hex(reg_value)
+        content = hex(reg_value).rstrip("L") or "0"
 
         reg_file.seek(0)
         reg_file.write(content)
@@ -173,3 +173,11 @@ class SfpUtil(SfpUtilBase):
         reg_file.close()
 
         return True
+
+    def get_transceiver_change_event(self):
+        """
+        TODO: This function need to be implemented
+        when decide to support monitoring SFP(Xcvrd)
+        on this platform.
+        """
+        raise NotImplementedError

@@ -64,11 +64,6 @@ fi
 
 echo "onie_platform: $onie_platform"
 
-# default console settings
-CONSOLE_PORT=0x3f8
-CONSOLE_DEV=0
-CONSOLE_SPEED=9600
-
 # Get platform specific linux kernel command line arguments
 ONIE_PLATFORM_EXTRA_CMDLINE_LINUX=""
 
@@ -76,6 +71,36 @@ ONIE_PLATFORM_EXTRA_CMDLINE_LINUX=""
 VAR_LOG_SIZE=4096
 
 [ -r platforms/$onie_platform ] && . platforms/$onie_platform
+
+# Pick up console port and speed from install enviroment if not defined yet.
+# Console port and speed setting in cmdline is like "console=ttyS0,9600n",
+# so we can use pattern 'console=ttyS[0-9]+,[0-9]+' to match it.
+# If failed to get the speed and ttyS from cmdline then set them to default: ttyS0 and 9600
+if [ -z "$CONSOLE_PORT" ]; then
+    console_ttys=$(cat /proc/cmdline | grep -Eo 'console=ttyS[0-9]+' | cut -d "=" -f2)
+    if [ -z "$console_ttys" -o "$console_ttys" = "ttyS0" ]; then
+        CONSOLE_PORT=0x3f8
+        CONSOLE_DEV=0
+    elif [ "$console_ttys" = "ttyS1" ]; then
+        CONSOLE_PORT=0x2f8
+        CONSOLE_DEV=1
+    elif [ "$console_ttys" = "ttyS2" ]; then
+        CONSOLE_PORT=0x3e8
+        CONSOLE_DEV=2
+    elif [ "$console_ttys" = "ttyS3" ]; then
+        CONSOLE_PORT=0x2e8
+        CONSOLE_DEV=3
+    fi
+fi
+
+if [ -z "$CONSOLE_SPEED" ]; then
+    speed=$(cat /proc/cmdline | grep -Eo 'console=ttyS[0-9]+,[0-9]+' | cut -d "," -f2)
+    if [ -z "$speed" ]; then
+        CONSOLE_SPEED=9600
+    else
+        CONSOLE_SPEED=$speed
+    fi
+fi
 
 # Install demo on same block device as ONIE
 if [ "$install_env" != "build" ]; then
@@ -163,11 +188,21 @@ create_demo_gpt_partition()
         while read -r part_index; do
             if [ "$blk_dev$part_index" = "$cur_part" ]; then continue; fi
             echo "deleting partition $part_index ..."
+            # if the partition is already mounted, umount first
+            df $blk_dev$part_index 2>/dev/null && {
+                umount $blk_dev$part_index || {
+                    echo "Error: Unable to umount $blk_dev$part_index"
+                    exit 1
+                }
+            }
             sgdisk -d $part_index $blk_dev || {
                 echo "Error: Unable to delete partition $part_index on $blk_dev"
                 exit 1
             }
-            partprobe
+            partprobe || {
+                echo "Error: Unable to partprobe"
+                exit 1
+            }
         done < $tmpfifo
     fi
 
@@ -406,7 +441,7 @@ if [ "$install_env" = "onie" ]; then
     
 elif [ "$install_env" = "sonic" ]; then
     demo_mnt="/host"
-    running_sonic_revision=$(cat /etc/sonic/sonic_version.yml | grep build_version | cut -f2 -d" ")
+    eval running_sonic_revision=$(cat /etc/sonic/sonic_version.yml | grep build_version | cut -f2 -d" ")
     # Prevent installing existing SONiC if it is running
     if [ "$image_dir" = "image-$running_sonic_revision" ]; then
         echo "Not installing SONiC version $running_sonic_revision, as current running SONiC has the same version"
@@ -446,13 +481,24 @@ fi
 # Decompress the file for the file system directly to the partition
 unzip -o $ONIE_INSTALLER_PAYLOAD -x "$FILESYSTEM_DOCKERFS" -d $demo_mnt/$image_dir
 
-TAR_EXTRA_OPTION="--numeric-owner"
+if [ "$install_env" = "onie" ]; then
+    TAR_EXTRA_OPTION="--numeric-owner"
+else
+    TAR_EXTRA_OPTION="--numeric-owner --warning=no-timestamp"
+fi
 mkdir -p $demo_mnt/$image_dir/$DOCKERFS_DIR
 unzip -op $ONIE_INSTALLER_PAYLOAD "$FILESYSTEM_DOCKERFS" | tar xz $TAR_EXTRA_OPTION -f - -C $demo_mnt/$image_dir/$DOCKERFS_DIR
 
 if [ "$install_env" = "onie" ]; then
     # Store machine description in target file system
-    cp /etc/machine.conf $demo_mnt
+    if [ -f /etc/machine-build.conf ]; then
+        # onie_ variable are generate at runtime.
+        # they are no longer hardcoded in /etc/machine.conf
+        # also remove single quotes around the value
+        set | grep ^onie | sed -e "s/='/=/" -e "s/'$//" > $demo_mnt/machine.conf
+    else
+        cp /etc/machine.conf $demo_mnt
+    fi
 
     # Store installation log in target file system
     rm -f $onie_initrd_tmp/tmp/onie-support*.tar.bz2
@@ -549,11 +595,12 @@ menuentry '$demo_grub_entry' {
         if [ x$grub_platform = xxen ]; then insmod xzio; insmod lzopio; fi
         insmod part_msdos
         insmod ext2
-        linux   /$image_dir/boot/vmlinuz-3.16.0-5-amd64 root=$grub_cfg_root rw $GRUB_CMDLINE_LINUX  \
+        linux   /$image_dir/boot/vmlinuz-4.9.0-7-amd64 root=$grub_cfg_root rw $GRUB_CMDLINE_LINUX  \
+                net.ifnames=0 biosdevname=0 \
                 loop=$image_dir/$FILESYSTEM_SQUASHFS loopfstype=squashfs                       \
                 apparmor=1 security=apparmor varlog_size=$VAR_LOG_SIZE usbcore.autosuspend=-1 $ONIE_PLATFORM_EXTRA_CMDLINE_LINUX
         echo    'Loading $demo_volume_label $demo_type initial ramdisk ...'
-        initrd  /$image_dir/boot/initrd.img-3.16.0-5-amd64
+        initrd  /$image_dir/boot/initrd.img-4.9.0-7-amd64
 }
 EOF
 

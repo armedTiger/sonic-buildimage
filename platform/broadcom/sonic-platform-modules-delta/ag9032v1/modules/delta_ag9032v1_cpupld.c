@@ -348,7 +348,7 @@ static struct platform_driver cpld_driver = {
 
 
 /*----------------   module initialization     ------------- */
-static void __init delta_ag9032v1_cpupld_init(void)
+static int __init delta_ag9032v1_cpupld_init(void)
 {
     int ret;
     printk(KERN_WARNING "ag9032v1_platform_cpupld module initialization\n");
@@ -384,4 +384,4 @@ module_exit(delta_ag9032v1_cpupld_exit);
 
 MODULE_DESCRIPTION("DNI ag9032v1 CPLD Platform Support");
 MODULE_AUTHOR("Stanley Chi <stanley.chi@deltaww.com>");
-MODULE_LICENSE("GPL"); 
+MODULE_LICENSE("GPL");

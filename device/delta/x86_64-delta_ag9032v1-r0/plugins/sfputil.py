@@ -51,7 +51,7 @@ class SfpUtil(SfpUtilBase):
             return False
 
         try:
-            reg_file = open("/sys/devices/platform/delta-ag9032v1-cpld.0/sfp_present")
+            reg_file = open("/sys/devices/platform/delta-ag9032v1-swpld.0/sfp_present")
         except IOError as e:
             print "Error: unable to open file: %s" % str(e)
             return False
@@ -76,7 +76,7 @@ class SfpUtil(SfpUtilBase):
             return False
 
         try:
-            reg_file = open("/sys/devices/platform/delta-ag9032v1-cpld.0/sfp_lpmode")
+            reg_file = open("/sys/devices/platform/delta-ag9032v1-swpld.0/sfp_lpmode")
         except IOError as e:
             print "Error: unable to open file: %s" % str(e)
 
@@ -100,7 +100,7 @@ class SfpUtil(SfpUtilBase):
             return False
 
         try:
-            reg_file = open("/sys/devices/platform/delta-ag9032v1-cpld.0/sfp_lpmode", "r+")
+            reg_file = open("/sys/devices/platform/delta-ag9032v1-swpld.0/sfp_lpmode", "r+")
         except IOError as e:
             print "Error: unable to open file: %s" % str(e)
             return False
@@ -129,7 +129,7 @@ class SfpUtil(SfpUtilBase):
         return True
 
     def reset(self, port_num):
-        QSFP_RESET_REGISTER_DEVICE_FILE = "/sys/devices/platform/delta-ag9032v1-cpld.0/sfp_reset"
+        QSFP_RESET_REGISTER_DEVICE_FILE = "/sys/devices/platform/delta-ag9032v1-swpld.0/sfp_reset"
 
         # Check for invalid port_num
         if port_num < self.port_start or port_num > self.port_end:
@@ -173,3 +173,11 @@ class SfpUtil(SfpUtilBase):
         reg_file.close()
 
         return True
+
+    def get_transceiver_change_event(self):
+        """
+        TODO: This function need to be implemented
+        when decide to support monitoring SFP(Xcvrd)
+        on this platform.
+        """
+        raise NotImplementedError
