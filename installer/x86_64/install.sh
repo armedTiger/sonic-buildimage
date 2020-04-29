@@ -162,7 +162,7 @@ if [ "$install_env" = "onie" ]; then
 fi
 
 # Creates a new partition for the DEMO OS.
-# 
+#
 # arg $1 -- base block device
 #
 # Returns the created partition number in $demo_part
@@ -177,7 +177,7 @@ create_demo_gpt_partition()
     tmpfifo=$(mktemp -u)
     trap_push "rm $tmpfifo || true"
     mkfifo -m 600 "$tmpfifo"
-    
+
     # See if demo partition already exists
     demo_part=$(sgdisk -p $blk_dev | grep -e "$demo_volume_label" -e "$legacy_volume_label" | awk '{print $1}')
     if [ -n "$demo_part" ] ; then
@@ -438,7 +438,7 @@ if [ "$install_env" = "onie" ]; then
         echo "Error: Unable to mount $demo_dev on $demo_mnt"
         exit 1
     }
-    
+
 elif [ "$install_env" = "sonic" ]; then
     demo_mnt="/host"
     eval running_sonic_revision=$(cat /etc/sonic/sonic_version.yml | grep build_version | cut -f2 -d" ")
@@ -479,15 +479,20 @@ else
 fi
 
 # Decompress the file for the file system directly to the partition
-unzip -o $ONIE_INSTALLER_PAYLOAD -x "$FILESYSTEM_DOCKERFS" -d $demo_mnt/$image_dir
-
-if [ "$install_env" = "onie" ]; then
-    TAR_EXTRA_OPTION="--numeric-owner"
+if [ x"$docker_inram" = x"on" ]; then
+    # when disk is small, keep dockerfs.tar.gz in disk, expand it into ramfs during initrd
+    unzip -o $ONIE_INSTALLER_PAYLOAD -d $demo_mnt/$image_dir
 else
-    TAR_EXTRA_OPTION="--numeric-owner --warning=no-timestamp"
+    unzip -o $ONIE_INSTALLER_PAYLOAD -x "$FILESYSTEM_DOCKERFS" -d $demo_mnt/$image_dir
+
+    if [ "$install_env" = "onie" ]; then
+        TAR_EXTRA_OPTION="--numeric-owner"
+    else
+        TAR_EXTRA_OPTION="--numeric-owner --warning=no-timestamp"
+    fi
+    mkdir -p $demo_mnt/$image_dir/$DOCKERFS_DIR
+    unzip -op $ONIE_INSTALLER_PAYLOAD "$FILESYSTEM_DOCKERFS" | tar xz $TAR_EXTRA_OPTION -f - -C $demo_mnt/$image_dir/$DOCKERFS_DIR
 fi
-mkdir -p $demo_mnt/$image_dir/$DOCKERFS_DIR
-unzip -op $ONIE_INSTALLER_PAYLOAD "$FILESYSTEM_DOCKERFS" | tar xz $TAR_EXTRA_OPTION -f - -C $demo_mnt/$image_dir/$DOCKERFS_DIR
 
 if [ "$install_env" = "onie" ]; then
     # Store machine description in target file system
@@ -540,8 +545,8 @@ export GRUB_CMDLINE_LINUX
 # Add common configuration, like the timeout and serial console.
 cat <<EOF > $grub_cfg
 $GRUB_SERIAL_COMMAND
-terminal_input serial
-terminal_output serial
+terminal_input console serial
+terminal_output console serial
 
 set timeout=5
 
@@ -550,15 +555,21 @@ EOF
 # Add the logic to support grub-reboot and grub-set-default
 cat <<EOF >> $grub_cfg
 if [ -s \$prefix/grubenv ]; then
-  load_env
+    load_env
 fi
-if [ "\${saved_entry}" ] ; then
-   set default="\${saved_entry}"
+if [ "\${saved_entry}" ]; then
+    set default="\${saved_entry}"
 fi
-if [ "\${next_entry}" ] ; then
-   set default="\${next_entry}"
-   set next_entry=
-   save_env next_entry
+if [ "\${next_entry}" ]; then
+    set default="\${next_entry}"
+    unset next_entry
+    save_env next_entry
+fi
+if [ "\${onie_entry}" ]; then
+    set next_entry="\${default}"
+    set default="\${onie_entry}"
+    unset onie_entry
+    save_env onie_entry next_entry
 fi
 
 EOF
@@ -572,19 +583,22 @@ EOF
     $onie_root_dir/tools/bin/onie-boot-mode -q -o install
 fi
 
-# Add a menu entry for the DEMO OS
+# Add a menu entry for the SONiC OS
 # Note: assume that apparmor is supported in the kernel
 demo_grub_entry="$demo_volume_revision_label"
 if [ "$install_env" = "sonic" ]; then
     old_sonic_menuentry=$(cat /host/grub/grub.cfg | sed "/$running_sonic_revision/,/}/!d")
-    demo_dev=$(echo $old_sonic_menuentry | sed -e "s/.*root\=\(.*\)rw.*/\1/")
+    grub_cfg_root=$(echo $old_sonic_menuentry | sed -e "s/.*root\=\(.*\)rw.*/\1/")
     onie_menuentry=$(cat /host/grub/grub.cfg | sed "/menuentry ONIE/,/}/!d")
-fi
-
-if [ "$install_env" = "build" ]; then
+elif [ "$install_env" = "build" ]; then
     grub_cfg_root=%%SONIC_ROOT%%
-else
-    grub_cfg_root=$demo_dev
+else # install_env = "onie"
+    uuid=$(blkid "$demo_dev" | sed -ne 's/.* UUID=\"\([^"]*\)\".*/\1/p')
+    if [ -z "$uuid" ]; then
+        grub_cfg_root=$demo_dev
+    else
+        grub_cfg_root=UUID=$uuid
+    fi
 fi
 
 cat <<EOF >> $grub_cfg
@@ -595,12 +609,12 @@ menuentry '$demo_grub_entry' {
         if [ x$grub_platform = xxen ]; then insmod xzio; insmod lzopio; fi
         insmod part_msdos
         insmod ext2
-        linux   /$image_dir/boot/vmlinuz-4.9.0-7-amd64 root=$grub_cfg_root rw $GRUB_CMDLINE_LINUX  \
+        linux   /$image_dir/boot/vmlinuz-4.19.0-6-amd64 root=$grub_cfg_root rw $GRUB_CMDLINE_LINUX  \
                 net.ifnames=0 biosdevname=0 \
                 loop=$image_dir/$FILESYSTEM_SQUASHFS loopfstype=squashfs                       \
                 apparmor=1 security=apparmor varlog_size=$VAR_LOG_SIZE usbcore.autosuspend=-1 $ONIE_PLATFORM_EXTRA_CMDLINE_LINUX
         echo    'Loading $demo_volume_label $demo_type initial ramdisk ...'
-        initrd  /$image_dir/boot/initrd.img-4.9.0-7-amd64
+        initrd  /$image_dir/boot/initrd.img-4.19.0-6-amd64
 }
 EOF
 

@@ -2,29 +2,30 @@
 SHELL = /bin/bash
 .SHELLFLAGS += -e
 
-MAIN_TARGET = libteam5_$(LIBTEAM_VERSION)_amd64.deb
-DERIVED_TARGETS = libteam-dev_$(LIBTEAM_VERSION)_amd64.deb \
-		  libteamdctl0_$(LIBTEAM_VERSION)_amd64.deb \
-		  libteam-utils_$(LIBTEAM_VERSION)_amd64.deb
+MAIN_TARGET = libteam5_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb
+DERIVED_TARGETS = libteam-dev_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libteamdctl0_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libteam-utils_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libteam5-dbgsym_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libteamdctl0-dbgsym_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libteam-utils-dbgsym_$(LIBTEAM_VERSION)_$(CONFIGURED_ARCH).deb
 
 $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	# Obtain libteam
 	rm -rf ./libteam
 	git clone https://github.com/jpirko/libteam.git
 	pushd ./libteam
-	git checkout -f v1.26
+	git checkout -b teamd -f c7237377dead39ae4a711297203bacf7edb9fa41
 
-	# Apply patch
-	git apply ../0001-libteam-Add-team_get_port_enabled-function.patch
-	git apply ../0002-libteam-Temporarily-remove-redundant-debug-mes.patch
-	git apply ../0003-teamd-lacp-runner-will-send-lacp-update-right-after-.patch
-	git apply ../0004-libteam-Add-lacp-fallback-support-for-single-member-.patch
+	# Apply patch series
+	stg init
+	stg import -s ../patch/series
 	popd
 
 	# Obtain debian packaging
 	git clone https://salsa.debian.org/debian/libteam.git tmp
 	pushd ./tmp
-	git checkout -f da006f2 # v1.26
+	git checkout -f debian/1.30-1
 	popd
 
 	mv tmp/debian libteam/

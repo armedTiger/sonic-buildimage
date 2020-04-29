@@ -30,10 +30,14 @@ def check_file(file_name):
                     continue
                 p = line.split("=", 1)[0]
 
+                # Remove trailing chip name "bcm8869x"
+                p = re.sub(r"\.bcm8869x(_adapter|_[a-z]\d)?$", "", p)
                 # Remove trailing unit ".<number>$"
                 p = re.sub(r"\.[0-9]+$", '', p)
                 # Remove trailing port name
-                p = re.sub(r"_[cxg]e(\d+)?$", '', p)
+                p = re.sub(r"_[cxg][de](\d+)?$", '', p)
+                # Remove trailing port id "{id/number}"
+                p = re.sub(r"\{.*\}", '', p)
                 # Remove trailing port name example
                 p = re.sub(r"_<port>$", '', p)
                 # Remove trailing port number
@@ -45,6 +49,12 @@ def check_file(file_name):
                 p = re.sub(r"_lane\d+$", '', p)
                 # Remove trailing "{<number>.<number>}$"
                 p = re.sub(r"{[0-9]+\.[0-9]+}$", '', p)
+                # Remove trailing phy with number
+                p = re.sub(r"_phy\d+$", '', p)
+                # Remove trailing phase of data granularity
+                p = re.sub(r"_data_granularity_\w\w$", '_data_granularity', p)
+                # Remove trailing type of port_init_speed
+                p = re.sub(r"^port_init_speed_\w+$", 'port_init_speed', p)
 
                 if not check_property(p):
                     file_ok = False

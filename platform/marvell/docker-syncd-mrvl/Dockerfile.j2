@@ -1,4 +1,4 @@
-FROM docker-config-engine
+FROM docker-config-engine-stretch
 
 ARG docker_container_name
 RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%syslogtag%/;" /etc/rsyslog.conf
@@ -14,7 +14,7 @@ debs/{{ deb }}{{' '}}
 {%- endfor -%}
 debs/
 
-RUN apt-get -y install libpcap-dev libxml2-dev python-dev swig libsensors4-dev libjemalloc1 nfs-common
+RUN apt-get -y install libpcap-dev libxml2-dev python-dev swig libsensors4-dev libatomic1 libjemalloc1 liblua5.1-0 lua-bitop lua-cjson nfs-common
 
 RUN dpkg -i \
 {% for deb in docker_syncd_mrvl_debs.split(' ') -%}
@@ -23,6 +23,8 @@ debs/{{ deb }}{{' '}}
 
 COPY ["start.sh", "syncd.sh", "/usr/bin/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
+COPY ["files/supervisor-proc-exit-listener", "/usr/bin"]
+COPY ["critical_processes", "/etc/supervisor/"]
 
 ## Clean up
 RUN apt-get clean -y; apt-get autoclean -y; apt-get autoremove -y

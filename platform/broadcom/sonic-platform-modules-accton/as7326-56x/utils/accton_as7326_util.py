@@ -133,6 +133,30 @@ def  show_set_help():
     print  "    use \""+ cmd + " sfp 1-56 {0|1}\" to set sfp# tx_disable"
     sys.exit(0)
 
+def dis_i2c_ir3570a(addr):
+    cmd = "i2cset -y 0 0x%x 0xE5 0x01" % addr
+    status, output = commands.getstatusoutput(cmd)
+    cmd = "i2cset -y 0 0x%x 0x12 0x02" % addr
+    status, output = commands.getstatusoutput(cmd)
+    return status
+
+def ir3570_check():
+    cmd = "i2cdump -y 0 0x42 s 0x9a"
+    try:
+        status, output = commands.getstatusoutput(cmd)
+        lines = output.split('\n')
+        hn = re.findall(r'\w+', lines[-1])
+        version = int(hn[1], 16)
+        if version == 0x24:  #only for ir3570a
+            ret = dis_i2c_ir3570a(4)
+        else:
+            ret = 0
+    except Exception as e:
+        print "Error on ir3570_check() e:" + str(e)
+        return -1
+    return ret
+
+
 def  show_eeprom_help():
     cmd =  sys.argv[0].split("/")[-1]+ " "  + args[0]
     print  "    use \""+ cmd + " 1-56 \" to dump sfp# eeprom"
@@ -175,6 +199,8 @@ kos = [
 
 def driver_install():
     global FORCE
+    
+    status, output = log_os_system('modprobe i2c_dev', 1)
     status, output = log_os_system("depmod", 1)
     for i in range(0,len(kos)):
         status, output = log_os_system(kos[i], 1)
@@ -215,8 +241,8 @@ i2c_nodes = {'fan': ['present', 'front_speed_rpm', 'rear_speed_rpm'] ,
 
 sfp_map =  [
         42,41,44,43,47,45,46,50,
-        48,49,51,52,53,56,55,54,
-        58,57,59,60,61,63,62,64,
+        48,49,52,51,53,56,55,54,
+        58,57,60,59,61,63,62,64,
         66,68,65,67,69,71,72,70,
         74,73,76,75,77,79,78,80,
         81,82,84,85,83,87,88,86,    #port 41~48
@@ -357,6 +383,9 @@ def do_install():
                 return  status
     else:
         print PROJECT_NAME.upper()+" drivers detected...."
+
+    ir3570_check()
+
     if not device_exist():
         print "No device, installing...."
         status = device_install()

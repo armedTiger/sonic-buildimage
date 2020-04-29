@@ -7,6 +7,7 @@ import subprocess
 import syslog
 import copy
 import jinja2
+import ipaddr as ipaddress
 from swsssdk import ConfigDBConnector
 
 # FILE
@@ -39,13 +40,87 @@ def obfuscate(data):
     else:
         return data
 
+class Iptables(object):
+    def __init__(self):
+        '''
+        Default MSS to 1460 - (MTU 1500 - 40 (TCP/IP Overhead))
+        For IPv6, it would be 1440 - (MTU 1500 - 60 octects)
+        '''
+        self.tcpmss = 1460
+        self.tcp6mss = 1440
+
+    def is_ip_prefix_in_key(self, key):
+        '''
+        Function to check if IP address is present in the key. If it
+        is present, then the key would be a tuple or else, it shall be
+        be string
+        '''
+        return (isinstance(key, tuple))
+
+    def load(self, lpbk_table):
+        for row in lpbk_table:
+            self.iptables_handler(row, lpbk_table[row])
+
+    def command(self, chain, ip, ver, op):
+        cmd = 'iptables' if ver == '4' else 'ip6tables'
+        cmd += ' -t mangle --{} {} -p tcp --tcp-flags SYN SYN'.format(op, chain)
+        cmd += ' -d' if chain == 'PREROUTING' else ' -s'
+        mss = self.tcpmss if ver == '4' else self.tcp6mss
+        cmd += ' {} -j TCPMSS --set-mss {}'.format(ip, mss)
+
+        return cmd
+
+    def iptables_handler(self, key, data, add=True):
+        if not self.is_ip_prefix_in_key(key):
+            return
+
+        iface, ip = key
+        ip_str = ip.split("/")[0]
+        ip_addr = ipaddress.IPAddress(ip_str)
+        if isinstance(ip_addr, ipaddress.IPv6Address):
+            ver = '6'
+        else:
+            ver = '4'
+
+        self.mangle_handler(ip_str, ver, add)
+
+    def mangle_handler(self, ip, ver, add):
+        if not add:
+            op = 'delete'
+        else:
+            op = 'check'
+
+        iptables_cmds = []
+        chains = ['PREROUTING', 'POSTROUTING']
+        for chain in chains:
+            cmd = self.command(chain, ip, ver, op)
+            if not add:
+                iptables_cmds.append(cmd)
+            else:
+                '''
+                For add case, first check if rule exists. Iptables just appends to the chain
+                as a new rule even if it is the same as an existing one. Check this and
+                do nothing if rule exists
+                '''
+                ret = subprocess.call(cmd, shell=True)
+                if ret == 0:
+                    syslog.syslog(syslog.LOG_INFO, "{} rule exists in {}".format(ip, chain))
+                else:
+                    # Modify command from Check to Append
+                    iptables_cmds.append(cmd.replace("check", "append"))
+
+        for cmd in iptables_cmds:
+            syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
+            try:
+                subprocess.check_call(cmd, shell=True)
+            except subprocess.CalledProcessError as err:
+                syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+                              .format(err.cmd, err.returncode, err.output))
 
 class AaaCfg(object):
     def __init__(self):
         self.auth_default = {
             'login': 'local',
-            'failthrough': True,
-            'fallback': True
         }
         self.tacplus_global_default = {
             'auth_type': TACPLUS_SERVER_AUTH_TYPE_DEFAULT,
@@ -93,6 +168,11 @@ class AaaCfg(object):
         if modify_conf:
             self.modify_conf_file()
 
+    def modify_single_file(self, filename, operations=None):
+        if operations:
+            cmd = "sed -e {0} {1} > {1}.new; mv -f {1} {1}.old; mv -f {1}.new {1}".format(' -e '.join(operations), filename)
+            os.system(cmd)
+
     def modify_conf_file(self):
         auth = self.auth_default.copy()
         auth.update(self.auth)
@@ -106,7 +186,7 @@ class AaaCfg(object):
                 server['ip'] = addr
                 server.update(self.tacplus_servers[addr])
                 servers_conf.append(server)
-            sorted(servers_conf, key=lambda t: t['priority'], reverse=True)
+            servers_conf = sorted(servers_conf, key=lambda t: int(t['priority']), reverse=True)
 
         template_file = os.path.abspath(PAM_AUTH_CONF_TEMPLATE)
         env = jinja2.Environment(loader=jinja2.FileSystemLoader('/'), trim_blocks=True)
@@ -118,19 +198,19 @@ class AaaCfg(object):
 
         # Modify common-auth include file in /etc/pam.d/login and sshd
         if os.path.isfile(PAM_AUTH_CONF):
-            os.system("sed -i -e '/^@include/s/common-auth$/common-auth-sonic/' /etc/pam.d/sshd")
-            os.system("sed -i -e '/^@include/s/common-auth$/common-auth-sonic/' /etc/pam.d/login")
+            self.modify_single_file('/etc/pam.d/sshd',  [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
+            self.modify_single_file('/etc/pam.d/login', [ "'/^@include/s/common-auth$/common-auth-sonic/'" ])
         else:
-            os.system("sed -i -e '/^@include/s/common-auth-sonic$/common-auth/' /etc/pam.d/sshd")
-            os.system("sed -i -e '/^@include/s/common-auth-sonic$/common-auth/' /etc/pam.d/login")
+            self.modify_single_file('/etc/pam.d/sshd',  [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
+            self.modify_single_file('/etc/pam.d/login', [ "'/^@include/s/common-auth-sonic$/common-auth/'" ])
 
         # Add tacplus in nsswitch.conf if TACACS+ enable
         if 'tacacs+' in auth['login']:
             if os.path.isfile(NSS_CONF):
-                os.system("sed -i -e '/tacplus/b' -e '/^passwd/s/compat/& tacplus/' /etc/nsswitch.conf")
+                self.modify_single_file(NSS_CONF, [ "'/tacplus/b'", "'/^passwd/s/compat/tacplus &/'", "'/^passwd/s/files/tacplus &/'" ])
         else:
             if os.path.isfile(NSS_CONF):
-                os.system("sed -i -e '/^passwd/s/ tacplus//' /etc/nsswitch.conf")
+                self.modify_single_file(NSS_CONF, [ "'/^passwd/s/tacplus //g'" ])
 
         # Set tacacs+ server in nss-tacplus conf
         template_file = os.path.abspath(NSS_TACPLUS_CONF_TEMPLATE)
@@ -150,6 +230,9 @@ class HostConfigDaemon:
         tacacs_server = self.config_db.get_table('TACPLUS_SERVER')
         self.aaacfg = AaaCfg()
         self.aaacfg.load(aaa, tacacs_global, tacacs_server)
+        lpbk_table = self.config_db.get_table('LOOPBACK_INTERFACE')
+        self.iptables = Iptables()
+        self.iptables.load(lpbk_table)
 
     def aaa_handler(self, key, data):
         self.aaacfg.aaa_update(key, data)
@@ -159,19 +242,71 @@ class HostConfigDaemon:
         log_data = copy.deepcopy(data)
         if log_data.has_key('passkey'):
             log_data['passkey'] = obfuscate(log_data['passkey'])
-        syslog.syslog(syslog.LOG_DEBUG, 'value of {} changed to {}'.format(key, log_data))
+        syslog.syslog(syslog.LOG_INFO, 'value of {} changed to {}'.format(key, log_data))
 
     def tacacs_global_handler(self, key, data):
         self.aaacfg.tacacs_global_update(key, data)
         log_data = copy.deepcopy(data)
         if log_data.has_key('passkey'):
             log_data['passkey'] = obfuscate(log_data['passkey'])
-        syslog.syslog(syslog.LOG_DEBUG, 'value of {} changed to {}'.format(key, log_data))
+        syslog.syslog(syslog.LOG_INFO, 'value of {} changed to {}'.format(key, log_data))
+
+    def lpbk_handler(self, key, data):
+        key = ConfigDBConnector.deserialize_key(key)
+        #Check if delete operation by fetch existing keys
+        keys = self.config_db.get_keys('LOOPBACK_INTERFACE')
+        if key in keys:
+            add = True
+        else:
+            add = False
+
+        self.iptables.iptables_handler(key, data, add)
+
+    def feature_status_handler(self, key, data):
+        status_data = self.config_db.get_table('FEATURE')
+        for key in status_data.keys():
+            if not key:
+                syslog.syslog(syslog.LOG_WARNING, "FEATURE key is missing")
+                return
+        status = status_data[key]['status']
+        if not status:
+            syslog.syslog(syslog.LOG_WARNING, "status is missing for {}".format(key))
+            return
+        if status == "enabled":
+            start_cmds=[]
+            start_cmds.append("sudo systemctl enable {}".format(key))
+            start_cmds.append("sudo systemctl start {}".format(key))
+            for cmd in start_cmds:
+                syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
+                try:
+                    subprocess.check_call(cmd, shell=True)
+                except subprocess.CalledProcessError as err:
+                    syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+                              .format(err.cmd, err.returncode, err.output))
+                    return
+            syslog.syslog(syslog.LOG_INFO, "Feature '{}' is enabled and started".format(key))
+        elif status == "disabled":
+            stop_cmds=[]
+            stop_cmds.append("sudo systemctl stop {}".format(key))
+            stop_cmds.append("sudo systemctl disable {}".format(key))
+            for cmd in stop_cmds:
+                syslog.syslog(syslog.LOG_INFO, "Running cmd - {}".format(cmd))
+                try:
+                    subprocess.check_call(cmd, shell=True)
+                except subprocess.CalledProcessError as err:
+                    syslog.syslog(syslog.LOG_ERR, "{} - failed: return code - {}, output:\n{}"
+                              .format(err.cmd, err.returncode, err.output))
+                    return
+            syslog.syslog(syslog.LOG_INFO, "Feature '{}' is stopped and disabled".format(key))
+        else:
+            syslog.syslog(syslog.LOG_ERR, "Unexpected status value '{}' for '{}'".format(status, key))
 
     def start(self):
         self.config_db.subscribe('AAA', lambda table, key, data: self.aaa_handler(key, data))
         self.config_db.subscribe('TACPLUS_SERVER', lambda table, key, data: self.tacacs_server_handler(key, data))
         self.config_db.subscribe('TACPLUS', lambda table, key, data: self.tacacs_global_handler(key, data))
+        self.config_db.subscribe('LOOPBACK_INTERFACE', lambda table, key, data: self.lpbk_handler(key, data))
+        self.config_db.subscribe('FEATURE', lambda table, key, data: self.feature_status_handler(key, data))
         self.config_db.listen()
 
 
@@ -182,4 +317,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

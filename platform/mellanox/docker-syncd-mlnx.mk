@@ -1,15 +1,18 @@
 # docker image for mlnx syncd
 
-DOCKER_SYNCD_MLNX = docker-syncd-mlnx.gz
-$(DOCKER_SYNCD_MLNX)_PATH = $(PLATFORM_PATH)/docker-syncd-mlnx
-$(DOCKER_SYNCD_MLNX)_DEPENDS += $(SYNCD) $(PYTHON_SDK_API) $(MLNX_SFPD)
-$(DOCKER_SYNCD_MLNX)_LOAD_DOCKERS += $(DOCKER_CONFIG_ENGINE)
-SONIC_DOCKER_IMAGES += $(DOCKER_SYNCD_MLNX)
-ifneq ($(ENABLE_SYNCD_RPC),y)
-SONIC_INSTALL_DOCKER_IMAGES += $(DOCKER_SYNCD_MLNX)
+DOCKER_SYNCD_PLATFORM_CODE = mlnx
+include $(PLATFORM_PATH)/../template/docker-syncd-base.mk
+
+$(DOCKER_SYNCD_BASE)_DEPENDS += $(SYNCD) $(PYTHON_SDK_API)
+
+$(DOCKER_SYNCD_BASE)_DBG_DEPENDS += $(SYNCD_DBG) \
+                                $(LIBSWSSCOMMON_DBG) \
+                                $(LIBSAIMETADATA_DBG) \
+                                $(LIBSAIREDIS_DBG)
+
+ifeq ($(SDK_FROM_SRC), y)
+$(DOCKER_SYNCD_BASE)_DBG_DEPENDS += $(MLNX_SDK_DBG_DEBS) $(MLNX_SAI_DBGSYM)
 endif
 
-$(DOCKER_SYNCD_MLNX)_CONTAINER_NAME = syncd
-$(DOCKER_SYNCD_MLNX)_RUN_OPT += --net=host --privileged -t
-$(DOCKER_SYNCD_MLNX)_RUN_OPT += -v /host/machine.conf:/etc/machine.conf
-$(DOCKER_SYNCD_MLNX)_RUN_OPT += -v /etc/sonic:/etc/sonic:ro
+$(DOCKER_SYNCD_BASE)_RUN_OPT += -v /host/warmboot:/var/warmboot
+$(DOCKER_SYNCD_BASE)_BASE_IMAGE_FILES += monit_syncd:/etc/monit/conf.d

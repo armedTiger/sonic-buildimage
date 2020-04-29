@@ -6,8 +6,8 @@ MFT_NAME = mft-$(MFT_VERSION)-$(MFT_REVISION)-x86_64-deb
 MFT_TGZ = $(MFT_NAME).tgz
 SRC_DEB = kernel-mft-dkms_$(MFT_VERSION)-$(MFT_REVISION)_all.deb
 
-MAIN_TARGET = mft-$(MFT_VERSION)-$(MFT_REVISION).amd64.deb
-DERIVED_TARGETS = kernel-mft-dkms_$(MFT_VERSION)-$(KVERSION)_all.deb mft-oem-$(MFT_VERSION)-$(MFT_REVISION).amd64.deb
+MAIN_TARGET = mft_$(MFT_VERSION)-$(MFT_REVISION)_amd64.deb
+DERIVED_TARGETS = kernel-mft-dkms_$(MFT_VERSION)-$(KVERSION)_all.deb mft-oem_$(MFT_VERSION)-$(MFT_REVISION)_amd64.deb
 
 $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	rm -rf $(MFT_NAME)
@@ -27,6 +27,6 @@ $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 
 	# fix timestamp because we do not actually build tools, only kernel
 	touch $(MFT_NAME)/DEBS/*
-	mv $(MFT_NAME)/SDEBS/ubuntu-drivers/4.9.0/kernel-mft-dkms_$(MFT_VERSION)-$(KVERSION)_all.deb $(MFT_NAME)/DEBS/* $(DEST)
+	mv $(MFT_NAME)/SDEBS/ubuntu-drivers/4.19.0/kernel-mft-dkms_$(MFT_VERSION)-$(KVERSION)_all.deb $(MFT_NAME)/DEBS/* $(DEST)
 
 $(addprefix $(DEST)/, $(DERIVED_TARGETS)): $(DEST)/% : $(DEST)/$(MAIN_TARGET)

@@ -20,7 +20,13 @@ RUN apt-get install -y \
                 libxslt1-dev \
                 python-setuptools \
                 build-essential \
-                curl
+                curl \
+                cmake \
+                tcpdump \
+                snmp \
+                python-scapy \
+                inetutils-ping \
+                telnet
 
 # For JNLP launcher
 RUN apt-get install -y default-jre
@@ -29,9 +35,9 @@ RUN apt-get install -y default-jre
 RUN apt-get install -y rsyslog psmisc
 
 # Remove cffi 1.5.2, will install 1.10.0 by pip later
-RUN apt-get remove -y python-cffi python-cffi-backend
+RUN apt-get purge -y python-cffi python-cffi-backend
 # Remove pycparser 2.14, will install >=2.17 by pip later
-RUN apt-get remove -y python-ply python-pycparser
+RUN apt-get purge -y python-ply python-pycparser
 
 RUN easy_install pip
 
@@ -45,11 +51,68 @@ RUN pip install ipaddr \
                 pysnmp==4.2.5 \
                 jinja2==2.7.2 \
                 cffi==1.10.0 \
-                paramiko==2.1.2
+                paramiko==2.1.2 \
+                passlib \
+                ipython==5.4.1 \
+                virtualenv \
+                "cryptography>=2.5" \
+                "future>=0.16.0" \
+                gitpython \
+                jsonpatch \
+                netmiko==2.4.2 \
+                prettytable \
+                psutil \
+                pycryptodome \
+                pyfiglet \
+                pylint==1.8.1 \
+                pyro4 \
+                pytest-repeat \
+                pytest-xdist==1.28.0 \
+                pytest==4.6.5 \
+                redis \
+                requests \
+                rpyc \
+                tabulate \
+                textfsm \
+    && git clone https://github.com/p4lang/scapy-vxlan.git \
+    && cd scapy-vxlan \
+    && python setup.py install \
+    && cd .. \
+    && rm -fr scapy-vxlan \
+    && wget https://github.com/nanomsg/nanomsg/archive/1.0.0.tar.gz \
+    && tar xvfz 1.0.0.tar.gz \
+    && cd nanomsg-1.0.0    \
+    && mkdir -p build      \
+    && cd build            \
+    && cmake ..            \
+    && make install        \
+    && ldconfig            \
+    && cd ../..            \
+    && rm -fr nanomsg-1.0.0 \
+    && rm -f 1.0.0.tar.gz  \
+    && pip install nnpy    \
+    && pip install dpkt
+
+# Install docker-ce-cli
+RUN apt-get update                  \
+    && apt-get install -y           \
+      apt-transport-https           \
+      ca-certificates               \
+      curl                          \
+      gnupg-agent                   \
+      software-properties-common                                                                                   \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -                                     \
+    && add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"    \
+    && apt-get update                                                                                              \
+    && apt-get install -y docker-ce-cli
 
 # Install Microsoft Azure Kusto Library for Python
-RUN pip install azure-kusto-data \
-                azure-kusto-ingest
+RUN pip install azure-kusto-data==0.0.13 \
+                azure-kusto-ingest==0.0.13
+
+# Install pytest-ansible module
+RUN pip install wheel==0.33.6
+RUN pip install pytest-ansible==2.2.2
 
 ## Copy and install sonic-mgmt docker dependencies
 COPY \
@@ -63,8 +126,9 @@ RUN dpkg -i \
 debs/{{ deb }}{{' '}}
 {%- endfor %}
 
-RUN git clone https://github.com/ansible/ansible
-RUN cd ansible && git checkout v2.0.0.2-1 -b v2.0.0.2-1 && git submodule update --init --recursive && make && make install
+RUN pip install ansible==2.8.7
+
+RUN pip install pysubnettree
 
 RUN mkdir /var/run/sshd
 EXPOSE 22
@@ -77,6 +141,7 @@ ARG hostname
 
 ENV BUILD_HOSTNAME $hostname
 ENV USER $user
+ENV CC=gcc CPP=cpp CXX=c++ LDSHARED="gcc -pthread -shared" PYMSSQL_BUILD_WITH_BUNDLED_FREETDS=1
 
 RUN groupadd -f -r -g $guid g$user
 
@@ -103,5 +168,9 @@ RUN azure-cli_bundle_*/installer
 # Temporary fix: upgrade the azure-keyvault package within az cli
 # TODO: if azure-cli contains newer version azure-keyvault, remove this
 RUN ~/lib/azure-cli/bin/python -m pip install azure-keyvault==0.3.7 -U
+
+# Install Virtual Environment
+RUN python -m virtualenv --system-site-packages env-201811
+RUN env-201811/bin/pip install ansible==2.0.0.2
 
 RUN git clone https://github.com/Azure/sonic-mgmt

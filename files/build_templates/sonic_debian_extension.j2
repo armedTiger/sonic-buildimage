@@ -24,6 +24,8 @@ PLATFORM_DIR=$2
 ## Enable debug output for script
 set -x -e
 
+CONFIGURED_ARCH=$([ -f .arch ] && cat .arch || echo amd64)
+
 . functions.sh
 BUILD_TEMPLATES=files/build_templates
 IMAGE_CONFIGS=files/image_config
@@ -34,21 +36,32 @@ FILESYSTEM_ROOT_USR="$FILESYSTEM_ROOT/usr"
 FILESYSTEM_ROOT_USR_SHARE="$FILESYSTEM_ROOT_USR/share"
 FILESYSTEM_ROOT_USR_SHARE_SONIC="$FILESYSTEM_ROOT_USR_SHARE/sonic"
 FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES="$FILESYSTEM_ROOT_USR_SHARE_SONIC/templates"
+FILESYSTEM_ROOT_ETC="$FILESYSTEM_ROOT/etc"
+FILESYSTEM_ROOT_ETC_SONIC="$FILESYSTEM_ROOT_ETC/sonic"
+
+GENERATED_SERVICE_FILE="$FILESYSTEM_ROOT/etc/sonic/generated_services.conf"
 
 clean_sys() {
-    sudo umount $FILESYSTEM_ROOT/sys/fs/cgroup/*            \
-                $FILESYSTEM_ROOT/sys/fs/cgroup              \
-                $FILESYSTEM_ROOT/sys || true
+    sudo chroot $FILESYSTEM_ROOT umount /sys/fs/cgroup/*            \
+                                        /sys/fs/cgroup              \
+                                        /sys || true
 }
 trap_push clean_sys
 sudo LANG=C chroot $FILESYSTEM_ROOT mount sysfs /sys -t sysfs
 
-sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay\"\" >> $FILESYSTEM_ROOT/etc/default/docker"
-sudo chroot $FILESYSTEM_ROOT service docker start
+sudo bash -c "echo \"DOCKER_OPTS=\"--storage-driver=overlay2\"\" >> $FILESYSTEM_ROOT/etc/default/docker"
+sudo cp files/docker/docker $FILESYSTEM_ROOT/etc/init.d/
+if [[ $CONFIGURED_ARCH == armhf || $CONFIGURED_ARCH == arm64 ]]; then
+    SONIC_NATIVE_DOCKERD_FOR_DOCKERFS=" -H unix:///dockerfs/var/run/docker.sock "
+    SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID="cat `pwd`/dockerfs/var/run/docker.pid"
+else
+    sudo chroot $FILESYSTEM_ROOT service docker start
+fi
 
 # Apply apt configuration files
 sudo cp $IMAGE_CONFIGS/apt/sources.list $FILESYSTEM_ROOT/etc/apt/
-sudo cp -R $IMAGE_CONFIGS/apt/sources.list.d/ $FILESYSTEM_ROOT/etc/apt/
+sudo mkdir -p $FILESYSTEM_ROOT/etc/apt/sources.list.d/
+sudo cp -R $IMAGE_CONFIGS/apt/sources.list.d/${CONFIGURED_ARCH}/* $FILESYSTEM_ROOT/etc/apt/sources.list.d/
 cat $IMAGE_CONFIGS/apt/sonic-dev.gpg.key | sudo LANG=C chroot $FILESYSTEM_ROOT apt-key add -
 
 # Update apt's snapshot of its repos
@@ -60,10 +73,19 @@ sudo cp $IMAGE_CONFIGS/environment/motd $FILESYSTEM_ROOT/etc/
 
 # Create all needed directories
 sudo mkdir -p $FILESYSTEM_ROOT/etc/sonic/
+sudo mkdir -p $FILESYSTEM_ROOT/etc/modprobe.d/
 sudo mkdir -p $FILESYSTEM_ROOT/var/cache/sonic/
 sudo mkdir -p $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
 
-# Install dependencies for SONiC config engine 
+# Install a more recent version of ifupdown2  (and its dependencies via 'apt-get -y install -f')
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/ifupdown2_*.deb || \
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+
+# Install ipables  (and its dependencies via 'apt-get -y install -f')
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/iptables_*.deb || \
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+
+# Install dependencies for SONiC config engine
 sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install \
     python-dev     \
     python-lxml    \
@@ -77,8 +99,16 @@ sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $CONFIG
 sudo rm -rf $FILESYSTEM_ROOT/$CONFIG_ENGINE_WHEEL_NAME
 
 # Install Python client for Redis
-sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install redis
-sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install redis-dump-load
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install "redis==2.10.6"
+
+# Install redis-dump-load Python 2 package
+REDIS_DUMP_LOAD_PY2_WHEEL_NAME=$(basename {{redis_dump_load_py2_wheel_path}})
+sudo cp {{redis_dump_load_py2_wheel_path}} $FILESYSTEM_ROOT/$REDIS_DUMP_LOAD_PY2_WHEEL_NAME
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $REDIS_DUMP_LOAD_PY2_WHEEL_NAME
+sudo rm -rf $FILESYSTEM_ROOT/$REDIS_DUMP_LOAD_PY2_WHEEL_NAME
+
+# Install Python module for ipaddress
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install ipaddress
 
 # Install SwSS SDK Python 2 package
 SWSSSDK_PY2_WHEEL_NAME=$(basename {{swsssdk_py2_wheel_path}})
@@ -86,60 +116,105 @@ sudo cp {{swsssdk_py2_wheel_path}} $FILESYSTEM_ROOT/$SWSSSDK_PY2_WHEEL_NAME
 sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $SWSSSDK_PY2_WHEEL_NAME
 sudo rm -rf $FILESYSTEM_ROOT/$SWSSSDK_PY2_WHEEL_NAME
 
+# Install sonic-yang-models py3 package, install dependencies
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/libyang_*.deb
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/libyang-cpp_*.deb
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/python2-yang_*.deb
+SONIC_YANG_MODEL_PY3_WHEEL_NAME=$(basename {{sonic_yang_models_py3_wheel_path}})
+sudo cp {{sonic_yang_models_py3_wheel_path}} $FILESYSTEM_ROOT/$SONIC_YANG_MODEL_PY3_WHEEL_NAME
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip3 install $SONIC_YANG_MODEL_PY3_WHEEL_NAME
+sudo rm -rf $FILESYSTEM_ROOT/$SONIC_YANG_MODEL_PY3_WHEEL_NAME
+
 # Install sonic-platform-common Python 2 package
 PLATFORM_COMMON_PY2_WHEEL_NAME=$(basename {{platform_common_py2_wheel_path}})
 sudo cp {{platform_common_py2_wheel_path}} $FILESYSTEM_ROOT/$PLATFORM_COMMON_PY2_WHEEL_NAME
 sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $PLATFORM_COMMON_PY2_WHEEL_NAME
 sudo rm -rf $FILESYSTEM_ROOT/$PLATFORM_COMMON_PY2_WHEEL_NAME
 
+# Install sonic-daemon-base Python 2 package
+DAEMON_BASE_PY2_WHEEL_NAME=$(basename {{daemon_base_py2_wheel_path}})
+sudo cp {{daemon_base_py2_wheel_path}} $FILESYSTEM_ROOT/$DAEMON_BASE_PY2_WHEEL_NAME
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $DAEMON_BASE_PY2_WHEEL_NAME
+sudo rm -rf $FILESYSTEM_ROOT/$DAEMON_BASE_PY2_WHEEL_NAME
+
 # Install built Python Click package (and its dependencies via 'apt-get -y install -f')
 # Do this before installing sonic-utilities so that it doesn't attempt to install
 # an older version as part of its dependencies
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/python-click*_all.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/python-click*_all.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
 
 # Install python pexpect used by sonic-utilities consutil
 # using pip install instead to get a more recent version than is available through debian
 sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install pexpect
+# Install python click-default-group by sonic-utilities
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install click-default-group==1.2
+
+# Install tabulate >= 0.8.1 via pip in order to support multi-line row output for sonic-utilities
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install tabulate==0.8.2
 
 # Install SONiC Utilities (and its dependencies via 'apt-get -y install -f')
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/python-sonic-utilities_*.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $python_debs_path/python-sonic-utilities_*.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+
+{% if enable_ztp == "y" %}
+# Install ZTP (and its dependencies via 'apt-get -y install -f')
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/sonic-ztp_*.deb || \
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+{% endif %}
 
 # SONiC utilities installs bash-completion as a dependency. However, it is disabled by default
 # in bash.bashrc, so we copy a version of the file with it enabled here.
 sudo cp -f $IMAGE_CONFIGS/bash/bash.bashrc $FILESYSTEM_ROOT/etc/
 
 # Install SONiC Device Data  (and its dependencies via 'apt-get -y install -f')
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/sonic-device-data_*.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/sonic-device-data_*.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
 
 # Install pam-tacplus and nss-tacplus
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/libtac2_*.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/libtac2_*.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/libpam-tacplus_*.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/libpam-tacplus_*.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/libnss-tacplus_*.deb || \
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/libnss-tacplus_*.deb || \
     sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
 # Disable tacplus by default
 sudo LANG=C chroot $FILESYSTEM_ROOT pam-auth-update --remove tacplus
 sudo sed -i -e '/^passwd/s/ tacplus//' $FILESYSTEM_ROOT/etc/nsswitch.conf
+
+# Install a custom version of kdump-tools  (and its dependencies via 'apt-get -y install -f')
+if [[ $CONFIGURED_ARCH == amd64 ]]; then
+sudo DEBIAN_FRONTEND=noninteractive dpkg --root=$FILESYSTEM_ROOT -i $debs_path/kdump-tools_*.deb || \
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true chroot $FILESYSTEM_ROOT apt-get -q --no-install-suggests --no-install-recommends --force-no install
+fi
+
+# Install custom-built monit package and SONiC configuration files
+sudo dpkg --root=$FILESYSTEM_ROOT -i $debs_path/monit_*.deb || \
+    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+sudo cp $IMAGE_CONFIGS/monit/monitrc $FILESYSTEM_ROOT/etc/monit/
+sudo chmod 600 $FILESYSTEM_ROOT/etc/monit/monitrc
+sudo cp $IMAGE_CONFIGS/monit/conf.d/* $FILESYSTEM_ROOT/etc/monit/conf.d/
+sudo chmod 600 $FILESYSTEM_ROOT/etc/monit/conf.d/*
 
 # Copy crontabs
 sudo cp -f $IMAGE_CONFIGS/cron.d/* $FILESYSTEM_ROOT/etc/cron.d/
 
 # Copy NTP configuration files and templates
 sudo cp $IMAGE_CONFIGS/ntp/ntp-config.service $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable ntp-config.service
+echo "ntp-config.service" | sudo tee -a $GENERATED_SERVICE_FILE
 sudo cp $IMAGE_CONFIGS/ntp/ntp-config.sh $FILESYSTEM_ROOT/usr/bin/
 sudo cp $IMAGE_CONFIGS/ntp/ntp.conf.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
 
+# Copy warmboot-finalizer files
+sudo LANG=C cp $IMAGE_CONFIGS/warmboot-finalizer/finalize-warmboot.sh $FILESYSTEM_ROOT/usr/local/bin/finalize-warmboot.sh
+sudo LANG=C cp $IMAGE_CONFIGS/warmboot-finalizer/warmboot-finalizer.service $FILESYSTEM_ROOT/etc/systemd/system/
+echo "warmboot-finalizer.service" | sudo tee -a $GENERATED_SERVICE_FILE
+
 # Copy rsyslog configuration files and templates
 sudo cp $IMAGE_CONFIGS/rsyslog/rsyslog-config.service  $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable rsyslog-config.service
 sudo cp $IMAGE_CONFIGS/rsyslog/rsyslog-config.sh $FILESYSTEM_ROOT/usr/bin/
 sudo cp $IMAGE_CONFIGS/rsyslog/rsyslog.conf.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
 sudo cp $IMAGE_CONFIGS/rsyslog/rsyslog.d/* $FILESYSTEM_ROOT/etc/rsyslog.d/
+echo "rsyslog-config.service" | sudo tee -a $GENERATED_SERVICE_FILE
 
 # Copy logrotate.d configuration files
 sudo cp -f $IMAGE_CONFIGS/logrotate/logrotate.d/* $FILESYSTEM_ROOT/etc/logrotate.d/
@@ -149,31 +224,68 @@ sudo cp -f $IMAGE_CONFIGS/systemd/journald.conf $FILESYSTEM_ROOT/etc/systemd/
 
 # Copy interfaces configuration files and templates
 sudo cp $IMAGE_CONFIGS/interfaces/interfaces-config.service  $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable interfaces-config.service
 sudo cp $IMAGE_CONFIGS/interfaces/interfaces-config.sh $FILESYSTEM_ROOT/usr/bin/
 sudo cp $IMAGE_CONFIGS/interfaces/*.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
+echo "interfaces-config.service" | sudo tee -a $GENERATED_SERVICE_FILE
+
+# Copy dhcp client configuration template and create an initial configuration
+sudo cp files/dhcp/dhclient.conf.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
+j2 files/dhcp/dhclient.conf.j2 | sudo tee $FILESYSTEM_ROOT/etc/dhcp/dhclient.conf
+sudo cp files/dhcp/ifupdown2_policy.json $FILESYSTEM_ROOT/etc/network/ifupdown2/policy.d
+sudo cp files/dhcp/90-dhcp6-systcl.conf.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
 
 # Copy initial interfaces configuration file, will be overwritten on first boot
-sudo cp $IMAGE_CONFIGS/interfaces/init_interfaces $FILESYSTEM_ROOT/etc/network
+sudo cp $IMAGE_CONFIGS/interfaces/init_interfaces $FILESYSTEM_ROOT/etc/network/interfaces
+sudo mkdir -p $FILESYSTEM_ROOT/etc/network/interfaces.d
 
 # Copy hostcfgd files
 sudo cp $IMAGE_CONFIGS/hostcfgd/hostcfgd.service $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable hostcfgd.service
+echo "hostcfgd.service" | sudo tee -a $GENERATED_SERVICE_FILE
 sudo cp $IMAGE_CONFIGS/hostcfgd/hostcfgd $FILESYSTEM_ROOT/usr/bin/
 sudo cp $IMAGE_CONFIGS/hostcfgd/*.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
+
+# copy core file uploader files
+sudo cp $IMAGE_CONFIGS/corefile_uploader/core_uploader.service $FILESYSTEM_ROOT/etc/systemd/system/
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl disable core_uploader.service
+sudo cp $IMAGE_CONFIGS/corefile_uploader/core_uploader.py $FILESYSTEM_ROOT/usr/bin/
+sudo cp $IMAGE_CONFIGS/corefile_uploader/core_analyzer.rc.json $FILESYSTEM_ROOT_ETC_SONIC/
+sudo chmod og-rw $FILESYSTEM_ROOT_ETC_SONIC/core_analyzer.rc.json
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install azure-storage
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install watchdog
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install futures
+
+{% if install_kubernetes == "y" %}
+# Copy kubelet service files
+# Keep it disabled until join, else it continuously restart and as well spew too many
+# non-required log lines wasting syslog resources.
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl disable kubelet.service
+{% endif %}
 
 # Copy the buffer configuration template
 sudo cp $BUILD_TEMPLATES/buffers_config.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
 
+# Copy the qos configuration template
+sudo cp $BUILD_TEMPLATES/qos_config.j2 $FILESYSTEM_ROOT_USR_SHARE_SONIC_TEMPLATES/
+
 # Copy hostname configuration scripts
 sudo cp $IMAGE_CONFIGS/hostname/hostname-config.service  $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable hostname-config.service
+echo "hostname-config.service" | sudo tee -a $GENERATED_SERVICE_FILE
 sudo cp $IMAGE_CONFIGS/hostname/hostname-config.sh $FILESYSTEM_ROOT/usr/bin/
+
+# Copy miscellaneous scripts
+sudo cp $IMAGE_CONFIGS/misc/docker-wait-any $FILESYSTEM_ROOT/usr/bin/
+
+# Copy internal topology configuration scripts
+{%- if sonic_asic_platform == "vs" %}
+sudo cp $IMAGE_CONFIGS/topology/topology.service $FILESYSTEM_ROOT/etc/systemd/system/
+echo "topology.service" | sudo tee -a $GENERATED_SERVICE_FILE
+sudo cp $IMAGE_CONFIGS/topology/topology.sh $FILESYSTEM_ROOT/usr/bin
+{%- endif %}
 
 # Copy updategraph script and service file
 j2 files/build_templates/updategraph.service.j2 | sudo tee $FILESYSTEM_ROOT/etc/systemd/system/updategraph.service
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable updategraph.service
 sudo cp $IMAGE_CONFIGS/updategraph/updategraph $FILESYSTEM_ROOT/usr/bin/
+echo "updategraph.service" | sudo tee -a $GENERATED_SERVICE_FILE
 {% if enable_dhcp_graph_service == "y" %}
 sudo bash -c "echo enabled=true > $FILESYSTEM_ROOT/etc/sonic/updategraph.conf"
 sudo bash -c "echo src=dhcp >> $FILESYSTEM_ROOT/etc/sonic/updategraph.conf"
@@ -181,17 +293,21 @@ sudo bash -c "echo dhcp_as_static=true >> $FILESYSTEM_ROOT/etc/sonic/updategraph
 {% else %}
 sudo bash -c "echo enabled=false > $FILESYSTEM_ROOT/etc/sonic/updategraph.conf"
 {% endif %}
-sudo bash -c "echo '{ \"DEVICE_METADATA\": { \"localhost\": { \"default_bgp_status\": {% if shutdown_bgp_on_start == "y" %}\"down\"{% else %}\"up\"{% endif %}, \"default_pfcwd_status\": {% if enable_pfcwd_on_start == "y" %}\"enable\"{% else %}\"disable\"{% endif %}  } },
-{%- print ' \\"CRM\\": { \\"Config\\": { \\"polling_interval\\": \\"300\\", ' %}
-{%- for crm_res in ["ipv4_route", "ipv6_route", "ipv4_nexthop", "ipv6_nexthop", "ipv4_neighbor", "ipv6_neighbor", "nexthop_group_member", "nexthop_group", "acl_table", "acl_group", "acl_entry", "acl_counter", "fdb_entry"] -%}
-\"{{crm_res}}_threshold_type\": \"percentage\", \"{{crm_res}}_low_threshold\": \"70\", \"{{crm_res}}_high_threshold\": \"85\"{% if not loop.last %}, {% endif %}
-{%- endfor %} } } }' >> $FILESYSTEM_ROOT/etc/sonic/init_cfg.json"
+
+# Generate initial SONiC configuration file
+j2 files/build_templates/init_cfg.json.j2 | sudo tee $FILESYSTEM_ROOT/etc/sonic/init_cfg.json
+
+# Copy config-setup script and service file
+j2 files/build_templates/config-setup.service.j2 | sudo tee $FILESYSTEM_ROOT/etc/systemd/system/config-setup.service
+sudo cp $IMAGE_CONFIGS/config-setup/config-setup $FILESYSTEM_ROOT/usr/bin/config-setup
+echo "config-setup.service" | sudo tee -a $GENERATED_SERVICE_FILE
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable config-setup.service
 
 # Copy SNMP configuration files
 sudo cp $IMAGE_CONFIGS/snmp/snmp.yml $FILESYSTEM_ROOT/etc/sonic/
 
 # Copy ASN configuration files
-sudo cp $IMAGE_CONFIGS/asn/deployment_id_asn_map.yml $FILESYSTEM_ROOT/etc/sonic/
+sudo cp $IMAGE_CONFIGS/constants/constants.yml $FILESYSTEM_ROOT/etc/sonic/
 
 # Copy sudoers configuration file
 sudo cp $IMAGE_CONFIGS/sudoers/sudoers $FILESYSTEM_ROOT/etc/
@@ -199,9 +315,23 @@ sudo cp $IMAGE_CONFIGS/sudoers/sudoers.lecture $FILESYSTEM_ROOT/etc/
 
 # Copy control plane ACL management daemon files
 sudo cp $IMAGE_CONFIGS/caclmgrd/caclmgrd.service  $FILESYSTEM_ROOT/etc/systemd/system/
-sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable caclmgrd.service
-sudo cp $IMAGE_CONFIGS/caclmgrd/caclmgrd-start.sh $FILESYSTEM_ROOT/usr/bin/
+echo "caclmgrd.service" | sudo tee -a $GENERATED_SERVICE_FILE
 sudo cp $IMAGE_CONFIGS/caclmgrd/caclmgrd $FILESYSTEM_ROOT/usr/bin/
+
+# Copy process/docker cpu/memory utilization data export daemon
+sudo cp $IMAGE_CONFIGS/procdockerstatsd/procdockerstatsd.service  $FILESYSTEM_ROOT/etc/systemd/system/
+echo "procdockerstatsd.service" | sudo tee -a $GENERATED_SERVICE_FILE
+sudo cp $IMAGE_CONFIGS/procdockerstatsd/procdockerstatsd $FILESYSTEM_ROOT/usr/bin/
+
+# Copy systemd timer configuration
+# It implements delayed start of services
+sudo cp $BUILD_TEMPLATES/process-reboot-cause.timer $FILESYSTEM_ROOT/etc/systemd/system/
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable process-reboot-cause.timer
+
+# Copy process-reboot-cause service files
+sudo cp $IMAGE_CONFIGS/process-reboot-cause/process-reboot-cause.service  $FILESYSTEM_ROOT/etc/systemd/system/
+echo "process-reboot-cause.service" | sudo tee -a $GENERATED_SERVICE_FILE
+sudo cp $IMAGE_CONFIGS/process-reboot-cause/process-reboot-cause $FILESYSTEM_ROOT/usr/bin/
 
 ## Install package without starting service
 ## ref: https://wiki.debian.org/chroot
@@ -214,7 +344,14 @@ sudo chmod a+x $FILESYSTEM_ROOT/usr/sbin/policy-rc.d
 {% if installer_debs.strip() -%}
 {% for deb in installer_debs.strip().split(' ') -%}
 {% if sonic_asic_platform == "mellanox" %}
-sudo dpkg --extract {{deb}} $FILESYSTEM_ROOT
+if [ -e tmpdir ] ;
+then
+    rm -rf tmpdir;
+fi
+sudo mkdir tmpdir
+sudo dpkg --extract {{deb}} tmpdir
+for subdir in $(ls tmpdir) ; do sudo cp -R tmpdir/$subdir/* $FILESYSTEM_ROOT/$subdir; done
+sudo rm -rf tmpdir
 {% else %}
 sudo dpkg --root=$FILESYSTEM_ROOT -i {{deb}} || sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
 {% endif %}
@@ -248,62 +385,115 @@ sudo dpkg --root=$FILESYSTEM_ROOT -P {{ debname }}
 
 sudo rm -f $FILESYSTEM_ROOT/usr/sbin/policy-rc.d
 
-## Revise /etc/init.d/networking for Arista switches
-if [ "$image_type" = "aboot" ]; then
-    sudo sed -i 's/udevadm settle/udevadm settle -E \/sys\/class\/net\/eth0/' $FILESYSTEM_ROOT/etc/init.d/networking
-fi
-
-# Service to update the sshd config file based on database changes for Arista devices
-sudo cp $IMAGE_CONFIGS/ssh/sshd-config-updater.service $FILESYSTEM_ROOT/etc/systemd/system
-sudo mkdir -p $FILESYSTEM_ROOT/etc/systemd/system/multi-user.target.wants
-cd $FILESYSTEM_ROOT/etc/systemd/system/multi-user.target.wants/
-sudo ln -s ../sshd-config-updater.service sshd-config-updater.service
-cd -
-sudo cp $IMAGE_CONFIGS/ssh/sshd-config-updater $FILESYSTEM_ROOT/usr/bin/
-sudo chmod +x $FILESYSTEM_ROOT/usr/bin/sshd-config-updater
-sudo cp $IMAGE_CONFIGS/ssh/sshd-clear-denied-sessions $FILESYSTEM_ROOT/usr/bin
-sudo chmod +x $FILESYSTEM_ROOT/usr/bin/sshd-clear-denied-sessions
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/libwrap0_*_amd64.deb || \
-    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
-sudo dpkg --root=$FILESYSTEM_ROOT -i target/debs/tcpd_*_amd64.deb || \
-    sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get -y install -f
+# Copy fstrim service and timer file, enable fstrim timer
+sudo cp $IMAGE_CONFIGS/fstrim/* $FILESYSTEM_ROOT/etc/systemd/system/
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable fstrim.timer
 
 ## copy platform rc.local
 sudo cp $IMAGE_CONFIGS/platform/rc.local $FILESYSTEM_ROOT/etc/
 
+## copy blacklist file
+sudo cp $IMAGE_CONFIGS/platform/linux_kernel_bde.conf $FILESYSTEM_ROOT/etc/modprobe.d/
+
+# Enable psample drivers to support sFlow on vs
+{% if sonic_asic_platform == "vs" %}
+sudo tee -a $FILESYSTEM_ROOT/etc/modules-load.d/modules.conf > /dev/null <<EOF
+psample
+act_sample
+EOF
+{% endif %}
+
+## Bind docker path
+if [[ $CONFIGURED_ARCH == armhf || $CONFIGURED_ARCH == arm64 ]]; then
+    sudo mkdir -p $FILESYSTEM_ROOT/dockerfs
+    sudo mount --bind dockerfs $FILESYSTEM_ROOT/dockerfs
+fi
+
 {% if installer_images.strip() -%}
-sudo chroot $FILESYSTEM_ROOT docker info
+clean_proc() {
+    sudo umount /proc || true
+}
+trap_push clean_proc
+sudo mount proc /proc -t proc
+sudo mkdir $FILESYSTEM_ROOT/target
+sudo mount --bind target $FILESYSTEM_ROOT/target
+sudo chroot $FILESYSTEM_ROOT docker $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS info
 {% for image in installer_images.strip().split(' ') -%}
 {% set imagefilename = image.split('/')|last -%}
 {% set imagename = imagefilename.split('.')|first -%}
-sudo LANG=C chroot $FILESYSTEM_ROOT docker load < {{image}}
-sudo LANG=C chroot $FILESYSTEM_ROOT docker tag {{imagename}}:latest {{imagename}}:$(sonic_get_version)
+sudo LANG=C chroot $FILESYSTEM_ROOT docker $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS load -i {{image}}
+sudo LANG=C chroot $FILESYSTEM_ROOT docker $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS tag {{imagename}}:latest {{imagename}}:$(sonic_get_version)
+{% if imagename.endswith('-dbg') %}
+{% set imagebasename = imagename.replace('-dbg', '') -%}
+sudo LANG=C chroot $FILESYSTEM_ROOT docker $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS tag {{imagename}}:latest {{imagebasename}}:$(sonic_get_version)
+sudo LANG=C chroot $FILESYSTEM_ROOT docker $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS tag {{imagename}}:latest {{imagebasename}}:latest
+{% endif %}
 {% endfor %}
-sudo chroot $FILESYSTEM_ROOT service docker stop
+
+{% if install_kubernetes == "y" %}
+## Pull in kubernetes docker images
+echo "pulling universal k8s images ..."
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT docker pull k8s.gcr.io/pause:${K8s_GCR_IO_PAUSE_VERSION}
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT docker pull k8s.gcr.io/kube-proxy:v${KUBERNETES_VERSION}
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT docker pull calico/node:v${K8s_CNI_CALICO_VERSION}
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT docker pull calico/pod2daemon-flexvol:v${K8s_CNI_CALICO_VERSION}
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT docker pull calico/cni:v${K8s_CNI_CALICO_VERSION}
+echo "docker images pull complete"
+{% endif %}
+
+sudo umount $FILESYSTEM_ROOT/target
+sudo rm -r $FILESYSTEM_ROOT/target
+sudo umount /proc || true
+if [[ $CONFIGURED_ARCH == armhf || $CONFIGURED_ARCH == arm64 ]]; then
+    sudo umount $FILESYSTEM_ROOT/dockerfs
+    sudo rm -fr $FILESYSTEM_ROOT/dockerfs
+    sudo kill -9 `sudo $SONIC_NATIVE_DOCKERD_FOR_DOCKERFS_PID` || true
+else
+    sudo chroot $FILESYSTEM_ROOT service docker stop
+fi
+sudo rm $FILESYSTEM_ROOT/etc/init.d/docker
 {% for script in installer_start_scripts.split(' ') -%}
 sudo cp {{script}} $FILESYSTEM_ROOT/usr/bin/
 {% endfor %}
 {% for service in installer_services.split(' ') -%}
 if [ -f {{service}} ]; then
     sudo cp {{service}} $FILESYSTEM_ROOT/etc/systemd/system/
-    sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable {{service}}
+
+    {% if "@" in service %}
+    MULTI_INSTANCE="{{service}}"
+    SINGLE_INSTANCE=${MULTI_INSTANCE/"@"}
+    sudo cp $SINGLE_INSTANCE $FILESYSTEM_ROOT/etc/systemd/system/
+    {% endif %}
+
+    echo "{{service}}" | sudo tee -a $GENERATED_SERVICE_FILE
 fi
 {% endfor %}
+if [ -f iccpd.service ]; then
+    sudo LANG=C chroot $FILESYSTEM_ROOT systemctl disable iccpd.service
+fi
 sudo LANG=C chroot $FILESYSTEM_ROOT fuser -km /sys || true
 sudo LANG=C chroot $FILESYSTEM_ROOT umount -lf /sys
 {% endif %}
 
-# Copy swss service script
+# Copy swss and syncd service script
 sudo LANG=C cp $SCRIPTS_DIR/swss.sh $FILESYSTEM_ROOT/usr/local/bin/swss.sh
+sudo LANG=C cp $SCRIPTS_DIR/syncd.sh $FILESYSTEM_ROOT/usr/local/bin/syncd.sh
+
+# Copy sonic-netns-exec script
+sudo LANG=C cp $SCRIPTS_DIR/sonic-netns-exec $FILESYSTEM_ROOT/usr/bin/sonic-netns-exec
 
 # Copy systemd timer configuration
 # It implements delayed start of services
 sudo cp $BUILD_TEMPLATES/snmp.timer $FILESYSTEM_ROOT/etc/systemd/system/
 sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable snmp.timer
+{% if enable_system_telemetry == 'y' %}
+sudo cp $BUILD_TEMPLATES/telemetry.timer $FILESYSTEM_ROOT/etc/systemd/system/
+sudo LANG=C chroot $FILESYSTEM_ROOT systemctl enable telemetry.timer
+{% endif %}
 
-sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get remove -y python-dev 
+sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get purge -y python-dev
 sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get clean -y
-sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get autoremove -y 
+sudo LANG=C DEBIAN_FRONTEND=noninteractive chroot $FILESYSTEM_ROOT apt-get autoremove -y
 
 {% for file in installer_extra_files.split(' ') -%}
 {% if file.strip() -%}
@@ -315,7 +505,28 @@ sudo cp {{src}} $FILESYSTEM_ROOT/{{dst}}
 
 {% if sonic_asic_platform == "mellanox" %}
 sudo mkdir -p $FILESYSTEM_ROOT/etc/mlnx/
-sudo cp target/files/$MLNX_FW_FILE $FILESYSTEM_ROOT/etc/mlnx/fw-SPC.mfa
+sudo cp $files_path/$MLNX_SPC_FW_FILE $FILESYSTEM_ROOT/etc/mlnx/fw-SPC.mfa
+sudo cp $files_path/$MLNX_SPC2_FW_FILE $FILESYSTEM_ROOT/etc/mlnx/fw-SPC2.mfa
+sudo cp $files_path/$MLNX_SPC3_FW_FILE $FILESYSTEM_ROOT/etc/mlnx/fw-SPC3.mfa
+sudo cp $files_path/$ISSU_VERSION_FILE $FILESYSTEM_ROOT/etc/mlnx/issu-version
+sudo cp $files_path/$MLNX_FFB_SCRIPT $FILESYSTEM_ROOT/usr/bin/mlnx-ffb.sh
+sudo cp $files_path/$MLNX_ONIE_FW_UPDATE $FILESYSTEM_ROOT/usr/bin/$MLNX_ONIE_FW_UPDATE
+sudo cp $files_path/$MLNX_SSD_FW_UPDATE $FILESYSTEM_ROOT/usr/bin/$MLNX_SSD_FW_UPDATE
 j2 platform/mellanox/mlnx-fw-upgrade.j2 | sudo tee $FILESYSTEM_ROOT/usr/bin/mlnx-fw-upgrade.sh
 sudo chmod 755 $FILESYSTEM_ROOT/usr/bin/mlnx-fw-upgrade.sh
+
+# Install mlnx-sonic-platform-common Python 2 package
+MLNX_PLATFORM_COMMON_PY2_WHEEL_NAME=$(basename {{mlnx_platform_api_py2_wheel_path}})
+sudo cp {{mlnx_platform_api_py2_wheel_path}} $FILESYSTEM_ROOT/$MLNX_PLATFORM_COMMON_PY2_WHEEL_NAME
+sudo https_proxy=$https_proxy LANG=C chroot $FILESYSTEM_ROOT pip install $MLNX_PLATFORM_COMMON_PY2_WHEEL_NAME
+sudo rm -rf $FILESYSTEM_ROOT/$MLNX_PLATFORM_COMMON_PY2_WHEEL_NAME
 {% endif %}
+
+{%- if SONIC_ROUTING_STACK == "frr" %}
+sudo mkdir $FILESYSTEM_ROOT/etc/sonic/frr
+sudo touch $FILESYSTEM_ROOT/etc/sonic/frr/frr.conf
+sudo touch $FILESYSTEM_ROOT/etc/sonic/frr/vtysh.conf
+sudo chown -R $FRR_USER_UID:$FRR_USER_GID $FILESYSTEM_ROOT/etc/sonic/frr
+sudo chmod -R 640 $FILESYSTEM_ROOT/etc/sonic/frr/
+sudo chmod 750 $FILESYSTEM_ROOT/etc/sonic/frr
+{%- endif %}

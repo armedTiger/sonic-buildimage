@@ -5,62 +5,101 @@
 # file: /etc/network/interfaces
 #
 {% endblock banner %}
+{% block mgmt_vrf %}
+{% if (MGMT_VRF_CONFIG) and (MGMT_VRF_CONFIG['vrf_global']['mgmtVrfEnabled'] == "true") %}
+auto mgmt
+iface mgmt
+    vrf-table 5000
+# The loopback network interface for mgmt VRF that is required for applications like NTP
+    up ip link add lo-m type dummy
+    up ip link set dev lo-m master mgmt
+    up ip addr add 127.0.0.1/8 dev lo-m
+    up ip link set lo-m up
+    down ip link delete dev lo-m
+{% endif %}
+{% endblock mgmt_vrf %}
 {% block loopback %}
 # The loopback network interface
 auto lo
 iface lo inet loopback
-# Use command 'ip addr list dev lo' to check all addresses
-{% for (name, prefix) in LOOPBACK_INTERFACE %}
-iface lo {{ 'inet' if prefix | ipv4 else 'inet6' }} static
-    address {{ prefix | ip }}
-    netmask {{ prefix | netmask if prefix | ipv4 else prefix | prefixlen }}
-#
-{% endfor %}
 {% endblock loopback %}
 {% block mgmt_interface %}
 
 # The management network interface
 auto eth0
+{% if (ZTP_DHCP_DISABLED is not defined) and (ZTP is defined) and (ZTP['mode'] is defined and ZTP['mode']['profile'] == 'active') %}
+
+
+# ZTP out-of-band interface
+allow-hotplug eth0
+{% if ZTP['mode']['ipv4'] == 'true' %}
+iface eth0 inet dhcp
+{% endif %}
+{% if ZTP['mode']['ipv6'] == 'true' %}
+iface eth0 inet6 dhcp
+    up sysctl net.ipv6.conf.eth0.accept_ra=1
+    down sysctl net.ipv6.conf.eth0.accept_ra=0
+{% endif %}
+
+{% if ZTP['mode']['inband'] == 'true' %}
+{% for port in PORT %}
+
+# ZTP in-band interface {{ port }}
+auto {{ port }}
+allow-hotplug {{ port }}
+{% if PORT_DATA['PORT_TABLE:'+port] is defined and PORT_DATA['PORT_TABLE:'+port]['value']['oper_status'] == 'up' %}
+{% if ZTP['mode']['ipv4'] == 'true' %}
+iface {{ port }} inet dhcp
+{% endif %}
+{% if ZTP['mode']['ipv6'] == 'true' %}
+iface {{ port }} inet6 dhcp
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% else %}
 {% if MGMT_INTERFACE %}
-{% for (name, prefix) in MGMT_INTERFACE %}
+{% for (name, prefix) in MGMT_INTERFACE|pfx_filter %}
 iface eth0 {{ 'inet' if prefix | ipv4 else 'inet6' }} static
     address {{ prefix | ip }}
     netmask {{ prefix | netmask if prefix | ipv4 else prefix | prefixlen }}
+    network {{ prefix | network }}
+    broadcast {{ prefix | broadcast }}
+{%     set vrf_table = 'default' %}
+{% if (MGMT_VRF_CONFIG) and (MGMT_VRF_CONFIG['vrf_global']['mgmtVrfEnabled'] == "true") %}
+{%     set vrf_table = '5000' %}
+    vrf mgmt
+{% endif %}
     ########## management network policy routing rules
     # management port up rules
-    up ip {{ '-4' if prefix | ipv4 else '-6' }} route add default via {{ MGMT_INTERFACE[(name, prefix)]['gwaddr'] }} dev eth0 table default
-    up ip {{ '-4' if prefix | ipv4 else '-6' }} route add {{ prefix | network }}/{{ prefix | prefixlen }} dev eth0 table default
-    up ip {{ '-4' if prefix | ipv4 else '-6' }} rule add from {{ prefix | ip }}/{{ '32' if prefix | ipv4 else '128' }} table default
+    up ip {{ '-4' if prefix | ipv4 else '-6' }} route add default via {{ MGMT_INTERFACE[(name, prefix)]['gwaddr'] }} dev eth0 table {{ vrf_table }} metric 201
+    up ip {{ '-4' if prefix | ipv4 else '-6' }} route add {{ prefix | network }}/{{ prefix | prefixlen }} dev eth0 table {{ vrf_table }}
+    up ip {{ '-4' if prefix | ipv4 else '-6' }} rule add from {{ prefix | ip }}/{{ '32' if prefix | ipv4 else '128' }} table {{ vrf_table }}
 {% for route in MGMT_INTERFACE[(name, prefix)]['forced_mgmt_routes'] %}
-    up ip rule add to {{ route }} table default
+    up ip rule add to {{ route }} table {{ vrf_table }}
 {% endfor %}
     # management port down rules
-    down ip {{ '-4' if prefix | ipv4 else '-6' }} route delete default via {{ MGMT_INTERFACE[(name, prefix)]['gwaddr'] }} dev eth0 table default
-    down ip {{ '-4' if prefix | ipv4 else '-6' }} route delete {{ prefix | network }}/{{ prefix | prefixlen }} dev eth0 table default
-    down ip {{ '-4' if prefix | ipv4 else '-6' }} rule delete from {{ prefix | ip }}/{{ '32' if prefix | ipv4 else '128' }} table default
+    pre-down ip {{ '-4' if prefix | ipv4 else '-6' }} route delete default via {{ MGMT_INTERFACE[(name, prefix)]['gwaddr'] }} dev eth0 table {{ vrf_table }}
+    pre-down ip {{ '-4' if prefix | ipv4 else '-6' }} route delete {{ prefix | network }}/{{ prefix | prefixlen }} dev eth0 table {{ vrf_table }}
+    pre-down ip {{ '-4' if prefix | ipv4 else '-6' }} rule delete from {{ prefix | ip }}/{{ '32' if prefix | ipv4 else '128' }} table {{ vrf_table }}
 {% for route in MGMT_INTERFACE[(name, prefix)]['forced_mgmt_routes'] %}
-    down ip rule delete to {{ route }} table default
+    pre-down ip rule delete to {{ route }} table {{ vrf_table }}
 {% endfor %}
 {# TODO: COPP policy type rules #}
 {% endfor %}
 {% else %}
 iface eth0 inet dhcp
+    metric 202
+{% if (MGMT_VRF_CONFIG) and (MGMT_VRF_CONFIG['vrf_global']['mgmtVrfEnabled'] == "true") %}
+    vrf mgmt
 {% endif %}
+iface eth0 inet6 dhcp
+    up sysctl net.ipv6.conf.eth0.accept_ra=1
+    down sysctl net.ipv6.conf.eth0.accept_ra=0
+{% endif %}
+{% endif %}
+#
+source /etc/network/interfaces.d/*
 #
 {% endblock mgmt_interface %}
-{% block front_panel_interfaces %}
-{% if PORTCHANNEL %}
-# "|| true" is added to suppress the error when interface is already a member of LAG
-# "ip link show | grep -q master" is added to ensure interface is enslaved
-{% for pc in PORTCHANNEL.keys()|sort %}
-{% for member in PORTCHANNEL[pc]['members'] %}
-allow-hotplug {{ member }}
-iface {{ member }} inet manual
-    pre-up teamdctl {{ pc }} port add {{ member }} || true
-    post-up ip link show {{ member }} | grep -q master && ifconfig {{ member }} up
-    post-down ifconfig {{ member }} down
-#
-{% endfor %}
-{% endfor %}
-{% endif %}
-{% endblock front_panel_interfaces %}

@@ -14,7 +14,7 @@ debs/{{ deb }}{{' '}}
 {%- endfor -%}
 debs/
 
-RUN apt-get -y install libpcap-dev libxml2-dev python-dev swig libsensors4-dev libjemalloc1
+RUN apt-get -y install libpcap-dev libxml2-dev python-dev swig libsensors4-dev libatomic1 libjemalloc1 liblua5.1-0 lua-bitop lua-cjson
 
 RUN dpkg -i \
 {% for deb in docker_syncd_cavm_debs.split(' ') -%}
@@ -23,6 +23,8 @@ debs/{{ deb }}{{' '}}
 
 COPY ["start.sh", "/usr/bin/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
+COPY ["files/supervisor-proc-exit-listener", "/usr/bin"]
+COPY ["critical_processes", "/etc/supervisor/"]
 
 COPY ["profile.ini", "/etc/ssw/AS7512/"]
 

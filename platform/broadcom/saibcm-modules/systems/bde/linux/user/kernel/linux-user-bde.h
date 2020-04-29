@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: linux-user-bde.h,v 1.23 Broadcom SDK $
@@ -82,6 +81,7 @@ typedef struct  {
 #define LUBDE_IPROC_WRITE_REG     _IO(LUBDE_MAGIC, 28)
 #define LUBDE_ATTACH_INSTANCE     _IO(LUBDE_MAGIC, 29)
 #define LUBDE_GET_DEVICE_STATE    _IO(LUBDE_MAGIC, 30)
+#define LUBDE_REPROBE             _IO(LUBDE_MAGIC, 31)
 
 #define LUBDE_SEM_OP_CREATE       1
 #define LUBDE_SEM_OP_DESTROY      2
@@ -94,9 +94,10 @@ typedef struct  {
 
 /* 
  * Version history
- * 1:add LUBDE_GET_DEVICE_STATE to support PCI hot plug
+ * 1: add LUBDE_GET_DEVICE_STATE to support PCI hot plug 
+ * 2: add LUBDE_REPROBE to support reprobe available devices
  */
-#define KBDE_VERSION    1
+#define KBDE_VERSION    2
 
 
 /* This is the signal that will be used

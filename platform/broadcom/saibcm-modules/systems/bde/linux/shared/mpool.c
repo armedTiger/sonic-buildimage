@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: mpool.c,v 1.18 Broadcom SDK $
@@ -71,11 +70,30 @@ static sal_sem_t _mpool_lock;
 #endif
 #endif
 
+#define MPOOL_BUF_SIZE               1024
+#define MPOOL_BUF_ALLOC_COUNT_MAX      16
+
 typedef struct mpool_mem_s {
     unsigned char *address;
     int size;
+    struct mpool_mem_s *prev;
     struct mpool_mem_s *next;
 } mpool_mem_t;
+
+static int _buf_alloc_count;
+static mpool_mem_t *mpool_buf[MPOOL_BUF_ALLOC_COUNT_MAX];
+static mpool_mem_t *free_list;
+
+#define ALLOC_INIT_MPOOL_BUF(ptr) \
+        ptr = MALLOC((sizeof(mpool_mem_t) * MPOOL_BUF_SIZE)); \
+        if (ptr) { \
+            int i; \
+            for (i = 0; i < MPOOL_BUF_SIZE - 1; i++) { \
+                ptr[i].next = &ptr[i+1]; \
+            } \
+            ptr[MPOOL_BUF_SIZE - 1].next = NULL; \
+            free_list = &ptr[0]; \
+        }
 
 /*
  * Function: mpool_init
@@ -117,6 +135,10 @@ mpool_alloc(mpool_handle_t pool, int size)
 
     MPOOL_LOCK();
 
+    if (size < BCM_CACHE_LINE_BYTES) {
+        size = BCM_CACHE_LINE_BYTES;
+    }
+
     mod = size & (BCM_CACHE_LINE_BYTES - 1);
     if (mod != 0 ) {
         size += (BCM_CACHE_LINE_BYTES - mod);
@@ -132,21 +154,37 @@ mpool_alloc(mpool_handle_t pool, int size)
         MPOOL_UNLOCK();
         return NULL;
     }
-    newptr = MALLOC(sizeof(mpool_mem_t));
-    if (!newptr) {
-        MPOOL_UNLOCK();
-        return NULL;
+
+    if (!free_list) {
+        if (_buf_alloc_count == MPOOL_BUF_ALLOC_COUNT_MAX) {
+            MPOOL_UNLOCK();
+            return NULL;
+        }
+
+        ALLOC_INIT_MPOOL_BUF(mpool_buf[_buf_alloc_count]);
+
+        if (mpool_buf[_buf_alloc_count] == NULL) {
+            MPOOL_UNLOCK();
+            return NULL;
+        }
+
+        _buf_alloc_count++;
     }
+
+    newptr = free_list;
+    free_list = free_list->next;
   
     newptr->address = ptr->address + ptr->size;
     newptr->size = size;
     newptr->next = ptr->next;
+    newptr->prev = ptr;
+    ptr->next->prev = newptr;
     ptr->next = newptr;
 #ifdef TRACK_DMA_USAGE
     _dma_mem_used += size;
 #endif
-    MPOOL_UNLOCK();
 
+    MPOOL_UNLOCK();
     return newptr->address;
 }
 
@@ -166,25 +204,29 @@ void
 mpool_free(mpool_handle_t pool, void *addr)
 {
     unsigned char *address = (unsigned char *)addr;  
-    mpool_mem_t *ptr = pool, *prev = NULL;
+    mpool_mem_t *head = pool, *ptr = NULL;
 
     MPOOL_LOCK();
-  
-    while (ptr && ptr->next) {
-        if (ptr->next->address == address) {
+
+    if (!(head && head->prev)) {
+        MPOOL_UNLOCK();
+        return;
+    }
+
+    ptr = head->prev->prev;
+
+    while (ptr && (ptr != head)) {
+        if (ptr->address == address) {
 #ifdef TRACK_DMA_USAGE
-            _dma_mem_used -= ptr->next->size;
+            _dma_mem_used -= ptr->size;
 #endif
+            ptr->prev->next = ptr->next;
+            ptr->next->prev = ptr->prev;
+            ptr->next = free_list;
+            free_list = ptr;
             break;
         }
-        ptr = ptr->next;
-    }
-  
-    if (ptr && ptr->next) {
-        prev = ptr;
-        ptr = ptr->next;
-        prev->next = ptr->next;
-        FREE(ptr);
+        ptr = ptr->prev;
     }
 
     MPOOL_UNLOCK();
@@ -209,34 +251,45 @@ mpool_create(void *base_ptr, int size)
 {
     mpool_mem_t *head, *tail;
     int mod = (int)(((unsigned long)base_ptr) & (BCM_CACHE_LINE_BYTES - 1));
+    int i;
 
     MPOOL_LOCK();
+
+    for (i = 0; i < MPOOL_BUF_ALLOC_COUNT_MAX; i++) {
+        mpool_buf[i] = NULL;
+    }
+
+    _buf_alloc_count = 0;
+
+    ALLOC_INIT_MPOOL_BUF(mpool_buf[_buf_alloc_count]);
+
+    if (mpool_buf[_buf_alloc_count] == NULL) {
+        MPOOL_UNLOCK();
+        return NULL;
+    }
+
+    _buf_alloc_count++;
 
     if (mod) {
         base_ptr = (char*)base_ptr + (BCM_CACHE_LINE_BYTES - mod);
         size -= (BCM_CACHE_LINE_BYTES - mod);
     }
     size &= ~(BCM_CACHE_LINE_BYTES - 1);
-  
 
-    head = (mpool_mem_t *)MALLOC(sizeof(mpool_mem_t));
-    if (head == NULL) {
-        return NULL;
-    }
-    tail = (mpool_mem_t *)MALLOC(sizeof(mpool_mem_t));
-    if (tail == NULL) {
-        FREE(head);
-        return NULL;
-    }
-  
+    head = free_list;
+    free_list = free_list->next;
+    tail = free_list;
+    free_list = free_list->next;
+
     head->size = tail->size = 0;
     head->address = base_ptr;
     tail->address = head->address + size;
+    head->prev = tail;
     head->next = tail;
+    tail->prev = head;
     tail->next = NULL;
 
     MPOOL_UNLOCK();
-
     return head;
 }
 
@@ -253,13 +306,20 @@ mpool_create(void *base_ptr, int size)
 int
 mpool_destroy(mpool_handle_t pool)
 {
-    mpool_mem_t *ptr, *next;
-  
+    int i;
+
     MPOOL_LOCK();
 
-    for (ptr = pool; ptr; ptr = next) {
-        next = ptr->next;
-        FREE(ptr);
+    if ((mpool_mem_t *)pool != mpool_buf[0]) {
+        MPOOL_UNLOCK();
+        return 0;
+    }
+
+    for (i = 0; i < MPOOL_BUF_ALLOC_COUNT_MAX; i++) {
+        if (mpool_buf[i]) {
+            FREE(mpool_buf[i]);
+            mpool_buf[i] = NULL;
+        }
     }
 
     MPOOL_UNLOCK();
@@ -286,7 +346,7 @@ mpool_usage(mpool_handle_t pool)
     MPOOL_LOCK();
 
     for (ptr = pool; ptr; ptr = ptr->next) {
-	usage += ptr->size;
+        usage += ptr->size;
     }
 
     MPOOL_UNLOCK();

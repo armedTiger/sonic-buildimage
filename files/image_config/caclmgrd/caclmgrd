@@ -183,16 +183,25 @@ class ControlPlaneAclManager(object):
 
                 for ((rule_table_name, rule_id), rule_props) in self._rules_db_info.iteritems():
                     if rule_table_name == table_name:
-                        acl_rules[rule_props["PRIORITY"]] = rule_props
+                        if not rule_props:
+                            log_warning("rule_props for rule_id {} empty or null!".format(rule_id))
+                            continue
+
+                        try:
+                            acl_rules[rule_props["PRIORITY"]] = rule_props
+                        except KeyError:
+                            log_error("rule_props for rule_id {} does not have key 'PRIORITY'!".format(rule_id))
+                            continue
 
                         # If we haven't determined the IP version for this ACL table yet,
-                        # try to do it now. We determine heuristically based on whether the
-                        # src IP is an IPv4 or IPv6 address.
-                        if not table_ip_version and "SRC_IP" in rule_props and rule_props["SRC_IP"]:
-                            ip_addr = ipaddress.IPAddress(rule_props["SRC_IP"].split("/")[0])
-                            if isinstance(ip_addr, ipaddress.IPv6Address):
+                        # try to do it now. We attempt to determine heuristically based on
+                        # whether the src or dst IP of this rule is an IPv4 or IPv6 address.
+                        if not table_ip_version:
+                            if (("SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]) or
+                                ("DST_IPV6" in rule_props and rule_props["DST_IPV6"])):
                                 table_ip_version = 6
-                            elif isinstance(ip_addr, ipaddress.IPv4Address):
+                            elif (("SRC_IP" in rule_props and rule_props["SRC_IP"]) or
+                                  ("DST_IP" in rule_props and rule_props["DST_IP"])):
                                 table_ip_version = 4
 
                 # If we were unable to determine whether this ACL table contains
@@ -216,7 +225,9 @@ class ControlPlaneAclManager(object):
                             rule_cmd = "ip6tables" if table_ip_version == 6 else "iptables"
                             rule_cmd += " -A INPUT -p {}".format(ip_protocol)
 
-                            if "SRC_IP" in rule_props and rule_props["SRC_IP"]:
+                            if "SRC_IPV6" in rule_props and rule_props["SRC_IPV6"]:
+                                rule_cmd += " -s {}".format(rule_props["SRC_IPV6"])
+                            elif "SRC_IP" in rule_props and rule_props["SRC_IP"]:
                                 rule_cmd += " -s {}".format(rule_props["SRC_IP"])
 
                             rule_cmd += " --dport {}".format(dst_port)

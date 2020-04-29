@@ -1,26 +1,25 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: kcom.h,v 1.9 Broadcom SDK $
  * $Copyright: (c) 2005 Broadcom Corp.
  * All Rights Reserved.$
  *
- * File: 	kcom.h
- * Purpose: 	User/Kernel message definitions
+ * File:    kcom.h
+ * Purpose: User/Kernel message definitions
  */
 
 #ifndef _KCOM_H
@@ -37,7 +36,6 @@
 #define KCOM_MSG_TYPE_RSP       2  /* Command response */
 #define KCOM_MSG_TYPE_EVT       3  /* Unsolicited event */
 
-
 /*
  * Message opcodes
  */
@@ -48,6 +46,7 @@
 #define KCOM_M_HW_INIT          4  /* H/W initialized */
 #define KCOM_M_ETH_HW_CONFIG    5  /* ETH HW config*/
 #define KCOM_M_DETACH           6  /* Detach kernel module */
+#define KCOM_M_REPROBE          7  /* Reprobe device */
 #define KCOM_M_NETIF_CREATE     11 /* Create network interface */
 #define KCOM_M_NETIF_DESTROY    12 /* Destroy network interface */
 #define KCOM_M_NETIF_LIST       13 /* Get list of network interface IDs */
@@ -57,10 +56,11 @@
 #define KCOM_M_FILTER_LIST      23 /* Get list of Rx filter IDs */
 #define KCOM_M_FILTER_GET       24 /* Get Rx filter info */
 #define KCOM_M_DMA_INFO         31 /* Tx/Rx DMA info */
-#define KCOM_M_DBGPKT_SET       41  /* Enbale debug packet function */
-#define KCOM_M_DBGPKT_GET       42  /* Get debug packet function info */
+#define KCOM_M_DBGPKT_SET       41 /* Enbale debug packet function */
+#define KCOM_M_DBGPKT_GET       42 /* Get debug packet function info */
+#define KCOM_M_WB_CLEANUP       51 /* Clean up for warmbooting */
 
-#define KCOM_VERSION            8  /* Protocol version */
+#define KCOM_VERSION            10 /* Protocol version */
 
 /*
  * Message status codes
@@ -79,7 +79,6 @@ typedef struct kcom_msg_hdr_s {
     uint8 reserved;
     uint16 id;
 } kcom_msg_hdr_t;
-
 
 /*
  * Object types
@@ -122,6 +121,13 @@ typedef struct kcom_msg_hdr_s {
 
 #define KCOM_NETIF_NAME_MAX     16
 
+/*
+ * Max size of Sand System Headers
+ * For DNX, Module Header(20B) + PTCH(2B) + ITMH(5B)
+ * For DPP, PTCH(2B) + ITMH(4B)
+ */
+#define KCOM_NETIF_SYSTEM_HEADERS_SIZE_MAX     27
+
 typedef struct kcom_netif_s {
     uint16 id;
     uint8 type;
@@ -134,6 +140,8 @@ typedef struct kcom_netif_s {
     uint8 macaddr[6];
     uint8 ptch[2];
     uint8 itmh[4];
+    uint8 system_headers[KCOM_NETIF_SYSTEM_HEADERS_SIZE_MAX];
+    uint8 system_headers_size;
     char name[KCOM_NETIF_NAME_MAX];
 } kcom_netif_t;
 
@@ -217,6 +225,13 @@ typedef struct kcom_filter_s {
         uint8 b[KCOM_FILTER_BYTES_MAX];
         uint32 w[KCOM_FILTER_WORDS_MAX];
     } mask;
+    /** Information to parse Dune system headers */
+    uint32 ftmh_lb_key_ext_size;
+    uint32 ftmh_stacking_ext_size;
+    uint32 pph_base_size;
+    uint32 pph_lif_ext_size[8];
+    uint8  udh_enable;
+    uint32 udh_length_type[4];
 } kcom_filter_t;
 
 /*
@@ -267,51 +282,47 @@ typedef struct kcom_dma_info_s {
     uint16 chan;
     uint16 flags;
     union {
-        void *p;
-        uint8 b[8];
-    } cookie;
-    union {
-        uint32 dcb_start;
+        uint64 dcb_start;
         struct {
             uint32 tx;
             uint32 rx;
         } seqno;
     } data;
+    union {
+        void *p;
+        uint8 b[8];
+    } cookie;
   } kcom_dma_info_t;
 
 /* Default channel configuration */
-#define KCOM_DMA_TX_CHAN         0
-#define KCOM_DMA_RX_CHAN         1
+#define KCOM_DMA_TX_CHAN        0
+#define KCOM_DMA_RX_CHAN        1
 
 
 #define KCOM_ETH_HW_T_RESET     1
 #define KCOM_ETH_HW_T_INIT      2
 #define KCOM_ETH_HW_T_OTHER     3
 
-#define KCOM_ETH_HW_C_ALL   0xff
+#define KCOM_ETH_HW_C_ALL       0xff
 
-#define KCOM_ETH_HW_RESET_F_TX     (1U << 0)
-#define KCOM_ETH_HW_RESET_F_RX     (1U << 1)
-#define KCOM_ETH_HW_RESET_F_TX_RECLAIM     (1U << 2)
-#define KCOM_ETH_HW_RESET_F_RX_RECLAIM     (1U << 3)
+#define KCOM_ETH_HW_RESET_F_TX              (1U << 0)
+#define KCOM_ETH_HW_RESET_F_RX              (1U << 1)
+#define KCOM_ETH_HW_RESET_F_TX_RECLAIM      (1U << 2)
+#define KCOM_ETH_HW_RESET_F_RX_RECLAIM      (1U << 3)
 
-#define KCOM_ETH_HW_INIT_F_TX      (1U << 0)
-#define KCOM_ETH_HW_INIT_F_RX      (1U << 1)
-#define KCOM_ETH_HW_INIT_F_RX_FILL  (1U << 2)
+#define KCOM_ETH_HW_INIT_F_TX               (1U << 0)
+#define KCOM_ETH_HW_INIT_F_RX               (1U << 1)
+#define KCOM_ETH_HW_INIT_F_RX_FILL          (1U << 2)
 
-
-#define KCOM_ETH_HW_OTHER_F_FIFO_LOOPBACK     (1U << 0)
-#define KCOM_ETH_HW_OTHER_F_INTERRUPT    (1U << 1)
-
-
-
+#define KCOM_ETH_HW_OTHER_F_FIFO_LOOPBACK   (1U << 0)
+#define KCOM_ETH_HW_OTHER_F_INTERRUPT       (1U << 1)
 
 typedef struct kcom_eth_hw_config_s {
     uint8 type;
     uint8 chan;
     uint32 flags;
     uint32 value;
-  } kcom_eth_hw_config_t;
+} kcom_eth_hw_config_t;
 
 /*
  * Message types
@@ -339,7 +350,6 @@ typedef struct kcom_msg_string_s {
     char val[KCOM_MSG_STRING_MAX];
 } kcom_msg_string_t;
 
-
 /*
  * Indicate that eth hardware is about to be reset. Active
  * DMA operations should be aborted and DMA and interrupts
@@ -353,7 +363,6 @@ typedef struct kcom_msg_eth_hw_config_s {
     kcom_msg_hdr_t hdr;
     kcom_eth_hw_config_t config;
 } kcom_msg_eth_hw_config_t;
-
 
 /*
  * Indicate that switch hardware is about to be reset. Active
@@ -371,8 +380,11 @@ typedef struct kcom_msg_hw_reset_s {
  */
 typedef struct kcom_msg_hw_init_s {
     kcom_msg_hdr_t hdr;
-    uint16 dcb_size;
-    uint16 dcb_type;
+    uint8 cmic_type;
+    uint8 dcb_type;
+    uint8 dcb_size;
+    uint8 pkt_hdr_size;
+    uint32 dma_hi;
     uint32 cdma_channels;
 } kcom_msg_hw_init_t;
 
@@ -383,6 +395,14 @@ typedef struct kcom_msg_detach_s {
     kcom_msg_hdr_t hdr;
     uint32 flags;
 } kcom_msg_detach_t;
+
+/*
+ * Reprobe switch device.
+ */
+typedef struct kcom_msg_reprobe_s {
+    kcom_msg_hdr_t hdr;
+    uint32 flags;
+} kcom_msg_reprobe_t;
 
 /*
  * Enable/Disable debugging packet function.
@@ -399,6 +419,14 @@ typedef struct kcom_msg_dbg_pkt_get_s {
     kcom_msg_hdr_t hdr;
     int value;
 } kcom_msg_dbg_pkt_get_t;
+
+/*
+ * Clean up warmboot-related resources.
+ */
+typedef struct kcom_msg_wb_cleanup_s {
+    kcom_msg_hdr_t hdr;
+    uint32 flags;
+} kcom_msg_wb_cleanup_t;
 
 /*
  * Create new system network interface. The network interface will
@@ -458,8 +486,7 @@ typedef struct kcom_msg_filter_destroy_s {
  * Get list of currently defined packet filters.
  */
 #ifndef KCOM_FILTER_MAX
-/* OPENNSL_FIXUP - Increased the filters to 1024 from 128 */
-#define KCOM_FILTER_MAX  1024
+#define KCOM_FILTER_MAX          128
 #endif
 
 typedef struct kcom_msg_filter_list_s {
@@ -484,11 +511,9 @@ typedef struct kcom_msg_dma_info_s {
     kcom_dma_info_t dma_info;
 } kcom_msg_dma_info_t;
 
-
 /*
  * All messages (e.g. for generic receive)
  */
-
 typedef union kcom_msg_s {
     kcom_msg_hdr_t hdr;
     kcom_msg_version_t version;
@@ -497,6 +522,7 @@ typedef union kcom_msg_s {
     kcom_msg_hw_init_t hw_init;
     kcom_msg_eth_hw_config_t eth_hw_config;
     kcom_msg_detach_t detach;
+    kcom_msg_reprobe_t reprobe;
     kcom_msg_netif_create_t netif_create;
     kcom_msg_netif_destroy_t netif_destroy;
     kcom_msg_netif_list_t netif_list;
@@ -508,8 +534,8 @@ typedef union kcom_msg_s {
     kcom_msg_dma_info_t dma_info;
     kcom_msg_dbg_pkt_set_t dbg_pkt_set;
     kcom_msg_dbg_pkt_get_t dbg_pkt_get;
+    kcom_msg_wb_cleanup_t wb_cleanup;
 } kcom_msg_t;
-
 
 /*
  * KCOM communication channel vectors
@@ -538,4 +564,4 @@ typedef struct kcom_chan_s {
     int (*recv)(void *handle, void *msg, unsigned int bufsz);
 } kcom_chan_t;
 
-#endif	/* _KCOM_H */
+#endif /* _KCOM_H */

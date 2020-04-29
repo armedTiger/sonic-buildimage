@@ -21,7 +21,7 @@ class PsuUtil(PsuBase):
     def __init__(self):
         PsuBase.__init__(self)
 
-        self.psu_path = "/bsp/module/"
+        self.psu_path = "/var/run/hw-management/thermal/"
         self.psu_presence = "psu{}_status"
         self.psu_oper_status = "psu{}_pwr_status"
 

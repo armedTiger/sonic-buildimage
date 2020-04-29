@@ -52,6 +52,7 @@ static ssize_t get_swpld_reg(struct device *dev, struct device_attribute *dev_at
     uint8_t get_cmd;       
     struct sensor_device_attribute *attr = to_sensor_dev_attr(dev_attr);
 
+    dni_klock();
     cmd_data_len = sizeof(cmd_data);
     get_cmd = CMD_GETDATA;
     cmd_data[0] = BMC_BUS_5;
@@ -62,12 +63,16 @@ static ssize_t get_swpld_reg(struct device *dev, struct device_attribute *dev_at
     if (attr->index <= SWPLD4_REG_VALUE){
         switch (attr->index) {
             case SWPLD1_REG_ADDR:
+                dni_kunlock();
                 return sprintf(buf, "0x%02x\n", swpld1_reg_addr);
             case SWPLD2_REG_ADDR:
+                dni_kunlock();
                 return sprintf(buf, "0x%02x\n", swpld2_reg_addr);
             case SWPLD3_REG_ADDR:
+                dni_kunlock();
                 return sprintf(buf, "0x%02x\n", swpld3_reg_addr);
             case SWPLD4_REG_ADDR:
+                dni_kunlock();
                 return sprintf(buf, "0x%02x\n", swpld4_reg_addr);
             case SWPLD1_REG_VALUE:
                 cmd_data[1] = SWPLD1_ADDR;
@@ -86,10 +91,12 @@ static ssize_t get_swpld_reg(struct device *dev, struct device_attribute *dev_at
                 cmd_data[2] = swpld4_reg_addr;
                 break;
             default:
+                dni_kunlock();
                 return sprintf(buf, "%d not found", attr->index);
         }
         ret = dni_bmc_cmd(get_cmd, cmd_data, cmd_data_len);
         ret = ret & 0xff;
+        dni_kunlock();
         return sprintf(buf, "0x%02x\n", ret);
     }else{
 
@@ -103,10 +110,11 @@ static ssize_t get_swpld_reg(struct device *dev, struct device_attribute *dev_at
             case SWPLD3_MAJOR_VER ... PLATFORM_TYPE :
                 cmd_data[1] = SWPLD3_ADDR;
                 break;
-            case SWPLD4_MAJOR_VER ... FAN_EEPROM_WP :
+            case SW_BOARD_ID1 ... FAN_EEPROM_WP :
                 cmd_data[1] = SWPLD4_ADDR;
                 break;
             default:
+                dni_kunlock();
                 return sprintf(buf, "%d not found", attr->index);
         }
         cmd_data[2] = attribute_data[attr->index].reg;
@@ -114,23 +122,31 @@ static ssize_t get_swpld_reg(struct device *dev, struct device_attribute *dev_at
         value = value & mask;
         switch (mask) {
             case 0xFF:
+                dni_kunlock();
                 return sprintf(buf, "0x%02x%s", value, note);
             case 0x0F:
+                dni_kunlock();
                 return sprintf(buf, "0x%01x%s", value, note);
             case 0xF0:
                 value = value >> 4;
+                dni_kunlock();
                 return sprintf(buf, "0x%01x%s", value, note);
             case 0xC0:
                 value = value >> 6;
+                dni_kunlock();
                 return sprintf(buf, "0x%01x%s", value, note);
             case 0x30:
                 value = value >> 4;
+                dni_kunlock();
                 return sprintf(buf, "0x%01x%s", value, note);       
             default :
                 value = value >> dni_log2(mask);
+                dni_kunlock();
                 return sprintf(buf, "%d%s", value, note);
         }        
-    } 
+    }
+    dni_kunlock();
+    return sprintf(buf, "%d not found", attr->index); 
 }
 
 static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_attr,
@@ -152,13 +168,17 @@ static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_at
     set_cmd = CMD_SETDATA;
     get_cmd = CMD_GETDATA;
 
+    dni_klock();
+
     err = kstrtoul(buf, 0, &set_data_ul);
     if (err){
+        dni_kunlock();
         return err;
     }
 
     if (set_data > 0xff){
         printk(KERN_ALERT "address out of range (0x00-0xFF)\n");
+        dni_kunlock();
         return count;
     }
 
@@ -170,15 +190,19 @@ static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_at
         //reg_addr
             case SWPLD1_REG_ADDR:
                 swpld1_reg_addr = set_data;
+                dni_kunlock();
                 return count;
             case SWPLD2_REG_ADDR:
                 swpld2_reg_addr = set_data;
+                dni_kunlock();
                 return count;
             case SWPLD3_REG_ADDR:
                 swpld3_reg_addr = set_data;
+                dni_kunlock();
                 return count;         
             case SWPLD4_REG_ADDR:
                 swpld4_reg_addr = set_data;
+                dni_kunlock();
                 return count;
         //reg_value       
             case SWPLD1_REG_VALUE:
@@ -198,9 +222,11 @@ static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_at
                 cmd_data[2] = swpld4_reg_addr;
                 break;
             default :
+                dni_kunlock();
                 return sprintf(buf, "%d not found", attr->index); 
         }
         dni_bmc_cmd(set_cmd, cmd_data, cmd_data_len);
+        dni_kunlock();
         return count;
     }
     else{
@@ -218,10 +244,11 @@ static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_at
             case SWPLD3_MAJOR_VER ... PLATFORM_TYPE://SWPLD3
                 cmd_data[1] = SWPLD3_ADDR;
                 break;
-            case SWPLD4_MAJOR_VER ... FAN_EEPROM_WP://SWPLD4
+            case SW_BOARD_ID1 ... FAN_EEPROM_WP://SWPLD4
                 cmd_data[1] = SWPLD4_ADDR;
                 break;
             default:
+                dni_kunlock();
                 return sprintf(buf, "%d not found", attr->index); 
         }
 
@@ -252,8 +279,11 @@ static ssize_t set_swpld_reg(struct device *dev, struct device_attribute *dev_at
                 set_data = mask_out | (set_data << dni_log2(mask) );        
         }   
         dni_bmc_cmd(set_cmd, cmd_data, cmd_data_len);
+        dni_kunlock();
         return count;
     }
+    dni_kunlock();
+    return count;
 }
 
 //SWPLD
@@ -273,9 +303,6 @@ static SENSOR_DEVICE_ATTR(psu1_pwr_ok,       S_IRUGO,           get_swpld_reg, N
 static SENSOR_DEVICE_ATTR(psu1_int,          S_IRUGO,           get_swpld_reg, NULL,          PSU1_INT);
 static SENSOR_DEVICE_ATTR(psu2_pwr_ok,       S_IRUGO,           get_swpld_reg, NULL,          PSU2_PWR_OK);
 static SENSOR_DEVICE_ATTR(psu2_int,          S_IRUGO,           get_swpld_reg, NULL,          PSU2_INT);
-static SENSOR_DEVICE_ATTR(synce_int,         S_IRUGO,           get_swpld_reg, NULL,          SYNCE_INT);
-static SENSOR_DEVICE_ATTR(synce_rst,         S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, SYNCE_RST);
-static SENSOR_DEVICE_ATTR(synce_eeprom_wp,   S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, SYNCE_EEPROM_WP);
 static SENSOR_DEVICE_ATTR(psu1_green_led,    S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, PSU1_GREEN_LED);
 static SENSOR_DEVICE_ATTR(psu1_red_led,      S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, PSU1_RED_LED);
 static SENSOR_DEVICE_ATTR(psu2_green_led,    S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, PSU2_GREEN_LED);
@@ -299,29 +326,19 @@ static SENSOR_DEVICE_ATTR(sb_ver,            S_IRUGO,           get_swpld_reg, N
 static SENSOR_DEVICE_ATTR(platform_type,     S_IRUGO,           get_swpld_reg, NULL,          PLATFORM_TYPE);
 
 //SWPLD4
-static SENSOR_DEVICE_ATTR(swpld4_major_ver,  S_IRUGO,           get_swpld_reg, NULL,          SWPLD4_MAJOR_VER);
-static SENSOR_DEVICE_ATTR(swpld4_minor_ver,  S_IRUGO,           get_swpld_reg, NULL,          SWPLD4_MINOR_VER);
-static SENSOR_DEVICE_ATTR(swpld4_scrtch_reg, S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, SWPLD4_SCRTCH_REG);
-static SENSOR_DEVICE_ATTR(bmc_rst,           S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, BMC_RST);
-static SENSOR_DEVICE_ATTR(cpld_lpc_rst,      S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_LPC_RST);
-static SENSOR_DEVICE_ATTR(cpld_sw_rst,       S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_SW_RST);
-static SENSOR_DEVICE_ATTR(mb_cpld_rst,       S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, MB_CPLD_RST);
-static SENSOR_DEVICE_ATTR(bcm56970_rst,      S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, BCM56970_RST);
-
-static SENSOR_DEVICE_ATTR(cpld_upgrade_rst, S_IRUGO,           get_swpld_reg, NULL,          CPLD_UPGRADE_RST);
-static SENSOR_DEVICE_ATTR(mb_rst_cpld,      S_IRUGO,           get_swpld_reg, NULL,          MB_RST_CPLD);
-static SENSOR_DEVICE_ATTR(cpu_rst_mb_oob,   S_IRUGO,           get_swpld_reg, NULL,          CPU_RST_MB_OOB);
-static SENSOR_DEVICE_ATTR(gpio_phy_rst,     S_IRUGO,           get_swpld_reg, NULL,          GPIO_PHY_RST);
-static SENSOR_DEVICE_ATTR(psu_fan_event,    S_IRUGO,           get_swpld_reg, NULL,          PSU_FAN_EVENT);
-static SENSOR_DEVICE_ATTR(cpu_thermal_int,  S_IRUGO,           get_swpld_reg, NULL,          CPU_THERMAL_INT);
-static SENSOR_DEVICE_ATTR(fan_int,          S_IRUGO,           get_swpld_reg, NULL,          FAN_INT);
-
-static SENSOR_DEVICE_ATTR(cpld_spi_wp,      S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_SPI_WP);
-static SENSOR_DEVICE_ATTR(rj45_console_sel, S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, RJ45_CONSOLE_SEL);
-static SENSOR_DEVICE_ATTR(system_int,       S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, SYSTEM_INT);
-static SENSOR_DEVICE_ATTR(cpld_mb_rst_done, S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_MB_RST_DONE);
-static SENSOR_DEVICE_ATTR(mb_pwr_ok,        S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, MB_PWR_OK);
-static SENSOR_DEVICE_ATTR(fan_eeprom_wp,    S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, FAN_EEPROM_WP);
+static SENSOR_DEVICE_ATTR(sw_board_id1,      S_IRUGO,           get_swpld_reg, NULL,          SW_BOARD_ID1);
+static SENSOR_DEVICE_ATTR(sw_board_id2,      S_IRUGO,           get_swpld_reg, NULL,          SW_BOARD_ID2);
+static SENSOR_DEVICE_ATTR(swbd_ver,          S_IRUGO,           get_swpld_reg, NULL,          SWBD_VER);
+static SENSOR_DEVICE_ATTR(swpld4_ver,        S_IRUGO,           get_swpld_reg, NULL,          SWPLD4_VER);
+static SENSOR_DEVICE_ATTR(psu_fan_event,     S_IRUGO,           get_swpld_reg, NULL,          PSU_FAN_EVENT);
+static SENSOR_DEVICE_ATTR(cpu_thermal_int,   S_IRUGO,           get_swpld_reg, NULL,          CPU_THERMAL_INT);
+static SENSOR_DEVICE_ATTR(fan_int,           S_IRUGO,           get_swpld_reg, NULL,          FAN_INT);
+static SENSOR_DEVICE_ATTR(cpld_spi_wp,       S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_SPI_WP);
+static SENSOR_DEVICE_ATTR(rj45_console_sel,  S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, RJ45_CONSOLE_SEL);
+static SENSOR_DEVICE_ATTR(system_int,        S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, SYSTEM_INT);
+static SENSOR_DEVICE_ATTR(cpld_mb_rst_done,  S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, CPLD_MB_RST_DONE);
+static SENSOR_DEVICE_ATTR(mb_pwr_ok,         S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, MB_PWR_OK);
+static SENSOR_DEVICE_ATTR(fan_eeprom_wp,     S_IRUGO | S_IWUSR, get_swpld_reg, set_swpld_reg, FAN_EEPROM_WP);
 
 static struct attribute *swpld1_device_attrs[] = {
     &sensor_dev_attr_swpld1_reg_value.dev_attr.attr,
@@ -333,9 +350,6 @@ static struct attribute *swpld1_device_attrs[] = {
     &sensor_dev_attr_psu1_int.dev_attr.attr,
     &sensor_dev_attr_psu2_pwr_ok.dev_attr.attr,
     &sensor_dev_attr_psu2_int.dev_attr.attr,
-    &sensor_dev_attr_synce_int.dev_attr.attr,
-    &sensor_dev_attr_synce_rst.dev_attr.attr,
-    &sensor_dev_attr_synce_eeprom_wp.dev_attr.attr,
     &sensor_dev_attr_psu1_green_led.dev_attr.attr,
     &sensor_dev_attr_psu1_red_led.dev_attr.attr,
     &sensor_dev_attr_psu2_green_led.dev_attr.attr,
@@ -371,20 +385,10 @@ static struct attribute *swpld3_device_attrs[] = {
 };
 
 static struct attribute *swpld4_device_attrs[] = {
-    &sensor_dev_attr_swpld4_reg_value.dev_attr.attr,
-    &sensor_dev_attr_swpld4_reg_addr.dev_attr.attr,
-    &sensor_dev_attr_swpld4_major_ver.dev_attr.attr,
-    &sensor_dev_attr_swpld4_minor_ver.dev_attr.attr,
-    &sensor_dev_attr_swpld4_scrtch_reg.dev_attr.attr,
-    &sensor_dev_attr_bmc_rst.dev_attr.attr,
-    &sensor_dev_attr_cpld_lpc_rst.dev_attr.attr,
-    &sensor_dev_attr_cpld_sw_rst.dev_attr.attr,
-    &sensor_dev_attr_mb_cpld_rst.dev_attr.attr,
-    &sensor_dev_attr_bcm56970_rst.dev_attr.attr,
-    &sensor_dev_attr_cpld_upgrade_rst.dev_attr.attr,
-    &sensor_dev_attr_mb_rst_cpld.dev_attr.attr,
-    &sensor_dev_attr_cpu_rst_mb_oob.dev_attr.attr,
-    &sensor_dev_attr_gpio_phy_rst.dev_attr.attr,
+    &sensor_dev_attr_sw_board_id1.dev_attr.attr,
+    &sensor_dev_attr_sw_board_id2.dev_attr.attr,
+    &sensor_dev_attr_swbd_ver.dev_attr.attr,
+    &sensor_dev_attr_swpld4_ver.dev_attr.attr,
     &sensor_dev_attr_psu_fan_event.dev_attr.attr,
     &sensor_dev_attr_cpu_thermal_int.dev_attr.attr,
     &sensor_dev_attr_fan_int.dev_attr.attr,
@@ -523,11 +527,6 @@ static int __init delta_ag9064_swpld_init(void)
 {
     int ret;
     printk(KERN_WARNING "ag9064_platform_swpld module initialization\n");
-
-    ret = dni_create_user();
-    if (ret != 0){
-        printk(KERN_WARNING "Fail to create IPMI user\n");
-    }
 
     // set the SWPLD prob and remove
     ret = platform_driver_register(&swpld1_driver);

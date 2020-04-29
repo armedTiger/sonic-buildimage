@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update
 
 # Install required packages
-RUN apt-get install -y libdbus-1-3 libdaemon0 libjansson4
+RUN apt-get install -y libdbus-1-3 libdaemon0 libjansson4 libpython2.7
 
 {% if docker_fpm_quagga_debs.strip() -%}
 # Copy locally-built Debian package dependencies
@@ -33,5 +33,7 @@ RUN rm -rf /debs ~/.cache
 COPY ["bgpcfgd", "start.sh", "/usr/bin/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
 COPY ["*.j2", "/usr/share/sonic/templates/"]
+COPY ["files/supervisor-proc-exit-listener", "/usr/bin"]
+COPY ["critical_processes", "/etc/supervisor"]
 
 ENTRYPOINT ["/usr/bin/supervisord"]

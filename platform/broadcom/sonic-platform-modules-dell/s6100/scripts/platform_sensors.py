@@ -16,7 +16,9 @@ S6100_MAX_FAN_TRAYS = 4
 S6100_MAX_PSUS = 2
 S6100_MAX_IOMS = 4
 
-MAILBOX_DIR = "/sys/devices/platform/SMF.512/hwmon/hwmon1"
+HWMON_DIR = "/sys/devices/platform/SMF.512/hwmon/"
+HWMON_NODE = os.listdir(HWMON_DIR)[0]
+MAILBOX_DIR = HWMON_DIR + HWMON_NODE
 iom_status_list = []
 
 # Get a mailbox register
@@ -253,8 +255,8 @@ def print_psu(psu):
         psu_fan_present = int(get_pmc_register('fan11_fault'))
         input_voltage = float(get_pmc_register('in29_input')) / 1000
         output_voltage = float(get_pmc_register('in30_input')) / 1000
-        input_current = float(get_pmc_register('curr601_input')) / 100
-        output_current = float(get_pmc_register('curr602_input')) / 100
+        input_current = float(get_pmc_register('curr601_input')) / 1000
+        output_current = float(get_pmc_register('curr602_input')) / 1000
         input_power = float(get_pmc_register('power1_input')) / 1000000
         output_power = float(get_pmc_register('power2_input')) / 1000000
         if (input_power != 0):
@@ -266,8 +268,8 @@ def print_psu(psu):
         psu_fan_present = int(get_pmc_register('fan12_fault'))
         input_voltage = float(get_pmc_register('in31_input')) / 1000
         output_voltage = float(get_pmc_register('in32_input')) / 1000
-        input_current = float(get_pmc_register('curr701_input')) / 100
-        output_current = float(get_pmc_register('curr702_input')) / 100
+        input_current = float(get_pmc_register('curr701_input')) / 1000
+        output_current = float(get_pmc_register('curr702_input')) / 1000
         input_power = float(get_pmc_register('power3_input')) / 1000000
         output_power = float(get_pmc_register('power4_input')) / 1000000
         if (input_power != 0):

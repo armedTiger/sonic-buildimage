@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: linux-user-bde.c,v 1.80 Broadcom SDK $
@@ -31,8 +30,8 @@
 
 #include "linux-user-bde.h"
 
-#ifdef KEYSTONE
-#include <shared/et/bcmdevs.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0)
+#include <linux/uaccess.h>
 #endif
 
 
@@ -64,6 +63,8 @@ MODULE_LICENSE("GPL");
 #define CMIC_CMCx_IRQ_STAT6_OFFSET(x)                    (0x314b4 + (0x1000 * x))
 #define CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(x)               (0x314b8 + (0x1000 * x))
 #define CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(x)               (0x314bc + (0x1000 * x))
+#define CMIC_CMCx_UC0_IRQ_MASK5_OFFSET(x)                (0x314c0 + (0x1000 * x))
+#define CMIC_CMCx_UC0_IRQ_MASK6_OFFSET(x)                (0x314c4 + (0x1000 * x))
 
 #define CMIC_CMCx_UC0_IRQ_MASK0_OFFSET(x)                (0x31428 + (0x1000 * x))
 #define CMIC_CMCx_UC0_IRQ_MASK1_OFFSET(x)                (0x3142c + (0x1000 * x))
@@ -72,21 +73,57 @@ MODULE_LICENSE("GPL");
 #define CMIC_CMCx_UC0_IRQ_MASK4_OFFSET(x)                (0x31438 + (0x1000 * x))
 
 /* CMICX defines */
-#define INTC_INTR_REG_NUM          (8)
+#define INTC_INTR_REG_NUM               (8)
+
+/*
+TODO:HX5
+The INTR base address values are changed for HX5,
+hence making new #defines so runtime decisions can
+be made.
+*/
 
 #define INTC_INTR_ENABLE_REG0          (0x180130f0)
 #define INTC_INTR_STATUS_REG0          (0x18013190)
 #define INTC_INTR_RAW_STATUS_REG0      (0x18013140)
 
-#define INTC_INTR_ENABLE_BASE          (INTC_INTR_ENABLE_REG0)
-#define INTC_INTR_STATUS_BASE          (INTC_INTR_STATUS_REG0)
-#define INTC_INTR_RAW_STATUS_BASE      (INTC_INTR_RAW_STATUS_REG0)
+#define INTC_INTR_ENABLE_BASE           (INTC_INTR_ENABLE_REG0)
+#define INTC_INTR_STATUS_BASE           (INTC_INTR_STATUS_REG0)
+#define INTC_INTR_RAW_STATUS_BASE       (INTC_INTR_RAW_STATUS_REG0)
 
+#define HX5_INTC_INTR_ENABLE_REG0          (0x102310f0)
+#define HX5_INTC_INTR_STATUS_REG0          (0x10231190)
+#define HX5_INTC_INTR_RAW_STATUS_REG0      (0x10231140)
+
+#define HX5_INTC_INTR_ENABLE_BASE          (HX5_INTC_INTR_ENABLE_REG0)
+#define HX5_INTC_INTR_STATUS_BASE          (HX5_INTC_INTR_STATUS_REG0)
+#define HX5_INTC_INTR_RAW_STATUS_BASE      (HX5_INTC_INTR_RAW_STATUS_REG0)
+
+#define IOREMAP(addr, size)                ioremap_nocache(addr, size)
+
+#define HX5_IHOST_GICD_ISENABLERN_0        (0x10781100)
+#define HX5_IHOST_GICD_ISENABLERN_1        (0x10781104)
+#define HX5_IHOST_GICD_ICENABLERN_1        (0x10781184)
+#define HX5_IHOST_GICD_ICENABLERN_8        (0x107811a0)
+/* Offset between ISENABLERN_1 and ICENABLERN_1 in 4-bytes */
+#define HX5_IHOST_IRQ_MASK_OFFSET          0x20
+#define HX5_IHOST_INTR_MAP_NUM             (HX5_IHOST_GICD_ICENABLERN_8 - HX5_IHOST_GICD_ISENABLERN_0)
+#define HX5_IHOST_INTR_STATUS_MAP_NUM      (INTC_INTR_REG_NUM * (sizeof(uint32)))
+#define IRQ_BIT(intr)                      (intr % (sizeof(uint32)*8))
+#define IRQ_MASK_INDEX(intr)               (intr / (sizeof(uint32)*8))
+#define HX5_CHIP_INTR_LOW_PRIORITY         119
+#define INTR_LOW_PRIORITY_BITPOS           (1 << IRQ_BIT(HX5_CHIP_INTR_LOW_PRIORITY))
+#define INTC_LOW_PRIORITY_INTR_REG_IND     IRQ_MASK_INDEX(HX5_CHIP_INTR_LOW_PRIORITY)
+#define INTC_PDMA_INTR_REG_IND             4
 
 #define READ_INTC_INTR(d, reg, v) \
-        (v =  user_bde->iproc_read(d, reg))
+        (v = user_bde->iproc_read(d, reg))
 #define WRITE_INTC_INTR(d, reg, v) \
         (user_bde->iproc_write(d, reg, v))
+
+#define IHOST_READ_INTR(d, reg, v) \
+        (v = readl((reg)))
+#define IHOST_WRITE_INTR(d, reg, v) \
+        (writel((v), (reg)))
 
 /* Allow override of default CMICm CMC */
 #ifndef BDE_CMICM_PCIE_CMC
@@ -100,6 +137,9 @@ MODULE_LICENSE("GPL");
 
 /* Defines used to distinguish CMICe from CMICm */
 #define CMICE_DEV_REV_ID                (0x178 / sizeof(uint32))
+
+static uint32 *ihost_intr_status_base = NULL;
+static uint32 *ihost_intr_enable_base = NULL;
 
 static ibde_t *user_bde = NULL;
 
@@ -220,18 +260,99 @@ _cmic_interrupt(bde_ctrl_t *ctrl)
 static void 
 _cmicx_interrupt(bde_ctrl_t *ctrl)
 {
-    int d, i;
+    int d, ind;
+    uint32 stat, iena, mask, fmask;
     bde_inst_resource_t *res;
+    uint32 intc_intr_status_base = 0, intc_intr_enable_base = 0;
 
     d = (((uint8 *)ctrl - (uint8 *)_devices) / sizeof (bde_ctrl_t));
     res = &_bde_inst_resource[ctrl->inst];
+
+    lkbde_irq_mask_get(d, &mask, &fmask);
+
+    if ((ctrl->dev_type & BDE_SWITCH_DEV_TYPE) &&
+            ((user_bde->get_dev(d)->device == BCM56370_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56371_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56372_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56374_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56375_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56376_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56377_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56577_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56578_DEVICE_ID) ||
+             (user_bde->get_dev(d)->device == BCM56579_DEVICE_ID))) {
+        intc_intr_status_base = HX5_INTC_INTR_STATUS_BASE;
+        intc_intr_enable_base = HX5_INTC_INTR_ENABLE_BASE;
+    } else {
+        intc_intr_status_base = INTC_INTR_STATUS_BASE;
+        intc_intr_enable_base = INTC_INTR_ENABLE_BASE;
+    }
+    if (fmask) {
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            IHOST_READ_INTR(d, ihost_intr_status_base + INTC_PDMA_INTR_REG_IND, stat);
+            IHOST_READ_INTR(d, ihost_intr_enable_base + INTC_PDMA_INTR_REG_IND, iena);
+        } else {
+            READ_INTC_INTR(d, intc_intr_status_base + 4 * INTC_PDMA_INTR_REG_IND, stat);
+            READ_INTC_INTR(d, intc_intr_enable_base + 4 * INTC_PDMA_INTR_REG_IND, iena);
+        }
+        if (stat & iena) {
+            if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+                IHOST_WRITE_INTR(d, ihost_intr_enable_base + INTC_PDMA_INTR_REG_IND +
+                    HX5_IHOST_IRQ_MASK_OFFSET, ~0);
+            } else {
+                WRITE_INTC_INTR(d, intc_intr_enable_base + 4 * INTC_PDMA_INTR_REG_IND, 0);
+            }
+
+            for (ind = 0; ind < INTC_INTR_REG_NUM; ind++) {
+                if (ind == INTC_PDMA_INTR_REG_IND) {
+                    continue;
+                }
+                if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+                    if (ind < INTC_LOW_PRIORITY_INTR_REG_IND) {
+                        continue;
+                    }
+                    IHOST_READ_INTR(d, ihost_intr_status_base + ind, stat);
+                    IHOST_READ_INTR(d, ihost_intr_enable_base + ind, iena);
+                    if (ind == INTC_LOW_PRIORITY_INTR_REG_IND) {
+                        stat &= INTR_LOW_PRIORITY_BITPOS;
+                    }
+                } else {
+                    READ_INTC_INTR(d, intc_intr_status_base + 4 * ind, stat);
+                    READ_INTC_INTR(d, intc_intr_enable_base + 4 * ind, iena);
+                }
+                if (stat & iena) {
+                    break;
+                }
+            }
+
+            if (ind >= INTC_INTR_REG_NUM) {
+                return;
+            }
+        }
+    }
 
     /* Disable all interrupts.. Re-enable unserviced interrupts later
      * So as to avoid getting new interrupts until the user level driver
      * enumerates the interrupts to be serviced
      */
-    for (i = 0 ; i < INTC_INTR_REG_NUM ; i++) {
-        WRITE_INTC_INTR(d, (INTC_INTR_ENABLE_BASE + 4*i), 0);
+    for (ind = 0; ind < INTC_INTR_REG_NUM; ind++) {
+        if (fmask && ind == INTC_PDMA_INTR_REG_IND) {
+            continue;
+        }
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            if (ind < INTC_LOW_PRIORITY_INTR_REG_IND) {
+                continue;
+            }
+            if (ind == INTC_LOW_PRIORITY_INTR_REG_IND) {
+                IHOST_WRITE_INTR(d, ihost_intr_enable_base + INTC_LOW_PRIORITY_INTR_REG_IND +
+                    HX5_IHOST_IRQ_MASK_OFFSET, INTR_LOW_PRIORITY_BITPOS);
+            } else {
+                IHOST_WRITE_INTR(d, ihost_intr_enable_base + ind +
+                    HX5_IHOST_IRQ_MASK_OFFSET, ~0);
+            }
+        } else {
+            WRITE_INTC_INTR(d, intc_intr_enable_base + 4*ind, 0);
+        }
     }
 
     /* Notify */
@@ -327,8 +448,108 @@ _cmicm_interrupt(bde_ctrl_t *ctrl)
 #endif
 }
 
+/* some device has cmc0 only */
+static void
+_cmicd_cmc0_interrupt(bde_ctrl_t *ctrl)
+{
+    int d;
+    int cmc = 0;
+    uint32 stat, mask = 0, fmask = 0, imask = 0;
+    bde_inst_resource_t *res;
 
-static void 
+    d = (((uint8 *)ctrl - (uint8 *)_devices) / sizeof (bde_ctrl_t));
+    res = &_bde_inst_resource[ctrl->inst];
+    lkbde_irq_mask_get(d, &mask, &fmask);
+
+    while (fmask) {
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT0_OFFSET(cmc));
+        imask = mask & ~fmask;
+        if (stat & imask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT1_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK1_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT2_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK2_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT3_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK3_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT4_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK4_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT5_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK5_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT6_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK6_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc));
+        }
+        if (stat & mask) {
+            break;
+        }
+        return;
+    }
+
+    if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+        lkbde_irq_mask_set(d, CMIC_CMCx_UC0_IRQ_MASK0_OFFSET(cmc), 0, 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK1_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK2_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK3_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK4_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK5_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK6_OFFSET(cmc), 0);
+    } else {
+        lkbde_irq_mask_set(d, CMIC_CMCx_PCIE_IRQ_MASK0_OFFSET(cmc), 0, 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc), 0);
+    }
+    atomic_set(&res->intr, 1);
+#ifdef BDE_LINUX_NON_INTERRUPTIBLE
+    wake_up(&res->intr_wq);
+#else
+    wake_up_interruptible(&res->intr_wq);
+#endif
+}
+
+static void
 _cmicd_interrupt(bde_ctrl_t *ctrl)
 {
     int d;
@@ -347,46 +568,83 @@ _cmicd_interrupt(bde_ctrl_t *ctrl)
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT1_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK1_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT2_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK2_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT3_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK3_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT4_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK4_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT5_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK5_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         stat = user_bde->read(d, CMIC_CMCx_IRQ_STAT6_OFFSET(cmc));
-        mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc));
+        if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+            mask = user_bde->read(d, CMIC_CMCx_UC0_IRQ_MASK6_OFFSET(cmc));
+        } else {
+            mask = user_bde->read(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc));
+        }
         if (stat & mask) {
             break;
         }
         return;
     }
 
-    lkbde_irq_mask_set(d, CMIC_CMCx_PCIE_IRQ_MASK0_OFFSET(cmc), 0, 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc), 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc), 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc), 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc), 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc), 0);
-    user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc), 0);
-
+    if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+        lkbde_irq_mask_set(d, CMIC_CMCx_UC0_IRQ_MASK0_OFFSET(cmc), 0, 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK1_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK2_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK3_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK4_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK5_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK6_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK0_OFFSET(1), 0);
+        user_bde->write(d, CMIC_CMCx_UC0_IRQ_MASK0_OFFSET(2), 0);
+    } else {
+        lkbde_irq_mask_set(d, CMIC_CMCx_PCIE_IRQ_MASK0_OFFSET(cmc), 0, 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK1_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK2_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK3_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK4_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK5_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK6_OFFSET(cmc), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK0_OFFSET(1), 0);
+        user_bde->write(d, CMIC_CMCx_PCIE_IRQ_MASK0_OFFSET(2), 0);
+    }
     atomic_set(&res->intr, 1);
 #ifdef BDE_LINUX_NON_INTERRUPTIBLE
     wake_up(&res->intr_wq);
@@ -415,124 +673,10 @@ _bcm88750_interrupt(bde_ctrl_t *ctrl)
 #endif
 }
 
-static void
-_qe2k_interrupt(bde_ctrl_t *ctrl)
-{
-    bde_inst_resource_t *res;
-
-    res = &_bde_inst_resource[ctrl->inst];
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x20/sizeof(uint32));
-
-    atomic_set(&res->intr, 1);
-#ifdef BDE_LINUX_NON_INTERRUPTIBLE
-    wake_up(&res->intr_wq);
-#else
-    wake_up_interruptible(&res->intr_wq);
-#endif
-}
-
-static void
-_fe2k_interrupt(bde_ctrl_t *ctrl)
-{
-    bde_inst_resource_t *res;
-
-    res = &_bde_inst_resource[ctrl->inst];
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x18/sizeof(uint32)); /* PC_INTERRUPT_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x24/sizeof(uint32)); /* PC_ERROR0_MASK    */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x2c/sizeof(uint32)); /* PC_ERROR1_MASK    */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x34/sizeof(uint32)); /* PC_UNIT_MASK      */
-
-    atomic_set(&res->intr, 1);
-#ifdef BDE_LINUX_NON_INTERRUPTIBLE
-    wake_up(&res->intr_wq);
-#else
-    wake_up_interruptible(&res->intr_wq);
-#endif
-}
-
-static void
-_fe2kxt_interrupt(bde_ctrl_t *ctrl)
-{
-    bde_inst_resource_t *res;
-
-    res = &_bde_inst_resource[ctrl->inst];
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x2c/sizeof(uint32)); /* PC_INTERRUPT_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x38/sizeof(uint32)); /* PC_ERROR0_MASK    */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x40/sizeof(uint32)); /* PC_ERROR1_MASK    */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x50/sizeof(uint32)); /* PC_UNIT_MASK      */
-
-    atomic_set(&res->intr, 1);
-#ifdef BDE_LINUX_NON_INTERRUPTIBLE
-    wake_up(&res->intr_wq);
-#else
-    wake_up_interruptible(&res->intr_wq);
-#endif
-}
-
-static void
-_bme3200_interrupt(bde_ctrl_t *ctrl)
-{
-    bde_inst_resource_t *res;
-
-    res = &_bde_inst_resource[ctrl->inst];
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x54/sizeof(uint32)); /* PI_PT_ERROR0 */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x5c/sizeof(uint32)); /* PI_PT_ERROR1 */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x64/sizeof(uint32)); /* PI_PT_ERROR2 */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x6c/sizeof(uint32)); /* PI_PT_ERROR3 */
-
-    atomic_set(&res->intr, 1);
-#ifdef BDE_LINUX_NON_INTERRUPTIBLE
-    wake_up(&res->intr_wq);
-#else
-    wake_up_interruptible(&res->intr_wq);
-#endif
-}
-
-
-static void
-_bm9600_interrupt(bde_ctrl_t *ctrl)
-{
-    bde_inst_resource_t *res;
-
-    res = &_bde_inst_resource[ctrl->inst];
-
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x5c/sizeof(uint32));  /* PI_INTERRUPT_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0xc/sizeof(uint32));   /* PI_UNIT_INTERRUPT0_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x14/sizeof(uint32));  /* PI_UNIT_INTERRUPT1_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x1c/sizeof(uint32));  /* PI_UNIT_INTERRUPT2_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x24/sizeof(uint32));  /* PI_UNIT_INTERRUPT3_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x2c/sizeof(uint32));  /* PI_UNIT_INTERRUPT4_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x34/sizeof(uint32));  /* PI_UNIT_INTERRUPT5_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x3c/sizeof(uint32));  /* PI_UNIT_INTERRUPT6_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x44/sizeof(uint32));  /* PI_UNIT_INTERRUPT7_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x4c/sizeof(uint32));  /* PI_UNIT_INTERRUPT8_MASK */
-    SSOC_WRITEL(0xffffffff, ctrl->ba + 0x54/sizeof(uint32));  /* PI_UNIT_INTERRUPT9_MASK */
-
-    atomic_set(&res->intr, 1);
-#ifdef BDE_LINUX_NON_INTERRUPTIBLE
-    wake_up(&res->intr_wq);
-#else
-    wake_up_interruptible(&res->intr_wq);
-#endif
-}
-
-
-
 /* The actual interrupt handler of ethernet devices */
 static void 
 _ether_interrupt(bde_ctrl_t *ctrl)
 {
-#ifdef KEYSTONE
-    /* 
-        * Since the two GMAC cores are sharing the same IRQ.
-        * Add the checking to handle the interrupt events.
-        */
-    if ((ctrl->devid == BCM53000_GMAC_ID)) {
-        if ((readl(ctrl->ba + 0x020/4) & readl(ctrl->ba + 0x024/4)) == 0) {
-            return;
-        }
-    }
-#endif    
     SSOC_WRITEL(0, ctrl->ba + 0x024/4);
 
     atomic_set(&_ether_interrupt_has_taken_place, 1);
@@ -551,11 +695,7 @@ static struct _intr_mode_s {
     { (isr_f)_cmic_interrupt,       "CMIC/CMICe" },
     { (isr_f)_cmicm_interrupt,      "CMICm" },
     { (isr_f)_cmicd_interrupt,      "CMICd" },
-    { (isr_f)_qe2k_interrupt,       "QE2K" },
-    { (isr_f)_fe2k_interrupt,       "FE2K" },
-    { (isr_f)_fe2kxt_interrupt,     "FE2KXT" },
-    { (isr_f)_bme3200_interrupt,    "BME3200" },
-    { (isr_f)_bm9600_interrupt,     "BM9600" },
+    { (isr_f)_cmicd_cmc0_interrupt, "CMICd CMC0" },
     { (isr_f)_bcm88750_interrupt,   "BCM88750" },
     { (isr_f)_cmicx_interrupt,      "CMICx" },
     { NULL, NULL }
@@ -580,7 +720,15 @@ static void
 _devices_init(int d)
 {
     bde_ctrl_t *ctrl;
-	uint32 ver;
+    uint32 ver;
+    uint16 device_id_mask = 0xFFF0;
+    uint16 device_id;
+    uint32 state = 0;
+
+    (void)lkbde_dev_state_get(d, &state);
+    if (state == BDE_DEV_STATE_REMOVED) {
+        return;
+    }
 
     ctrl = &_devices[d];
     /* Initialize our control info */
@@ -594,21 +742,6 @@ _devices_init(int d)
     }
     if (ctrl->dev_type & BDE_SWITCH_DEV_TYPE) {
         switch (user_bde->get_dev(d)->device) {
-        case QE2000_DEVICE_ID:
-            ctrl->isr = (isr_f)_qe2k_interrupt;
-            break;
-        case BCM88020_DEVICE_ID:
-            ctrl->isr = (isr_f)_fe2k_interrupt;
-            break;
-        case BCM88025_DEVICE_ID:
-            ctrl->isr = (isr_f)_fe2kxt_interrupt;
-            break;
-        case BME3200_DEVICE_ID:
-            ctrl->isr = (isr_f)_bme3200_interrupt;
-            break;
-        case BM9600_DEVICE_ID:
-            ctrl->isr = (isr_f)_bm9600_interrupt;
-            break;
         case BCM88750_DEVICE_ID:
         case BCM88753_DEVICE_ID:
         case BCM88754_DEVICE_ID:
@@ -616,7 +749,10 @@ _devices_init(int d)
         case BCM88752_DEVICE_ID:
             ctrl->isr = (isr_f)_bcm88750_interrupt;
             break;
-        /* FIXME: might use _devices[i].dev_type & BDE_AXI_DEV_TYPE*/
+        case BCM53540_DEVICE_ID:
+        case BCM53547_DEVICE_ID:
+        case BCM53548_DEVICE_ID:
+        case BCM53549_DEVICE_ID:
         case BCM88670_DEVICE_ID:
         case BCM88671_DEVICE_ID:
         case BCM88671M_DEVICE_ID:
@@ -647,7 +783,7 @@ _devices_init(int d)
         case BCM88380_DEVICE_ID:
         case BCM88381_DEVICE_ID:
         case BCM88680_DEVICE_ID:
-        case BCM88690_DEVICE_ID:
+        case BCM88800_DEVICE_ID:
         case BCM88770_DEVICE_ID:
         case BCM88773_DEVICE_ID:
         case BCM88774_DEVICE_ID:
@@ -662,29 +798,61 @@ _devices_init(int d)
         case BCM88474H_DEVICE_ID:
         case BCM88476_DEVICE_ID:
         case BCM88477_DEVICE_ID:
-
         case BCM88270_DEVICE_ID:
         case BCM88272_DEVICE_ID:
         case BCM88273_DEVICE_ID:
+        case BCM88274_DEVICE_ID:
         case BCM88278_DEVICE_ID:
+        case BCM88279_DEVICE_ID:
         case BCM8206_DEVICE_ID:
         case BCM88950_DEVICE_ID:
         case BCM88953_DEVICE_ID:
         case BCM88954_DEVICE_ID:
         case BCM88955_DEVICE_ID:
         case BCM88956_DEVICE_ID:
-        case BCM88790_DEVICE_ID:
         case BCM88772_DEVICE_ID:
         case BCM88952_DEVICE_ID:
-            ctrl->isr = (isr_f)_cmicd_interrupt;
+            ctrl->isr = (isr_f)_cmicd_cmc0_interrupt;
+            break;
+        case BCM88790_DEVICE_ID:
+            ctrl->isr = (isr_f)_cmicx_interrupt;
+            break;
+        case BCM56370_DEVICE_ID:
+        case BCM56371_DEVICE_ID:
+        case BCM56372_DEVICE_ID:
+        case BCM56374_DEVICE_ID:
+        case BCM56375_DEVICE_ID:
+        case BCM56376_DEVICE_ID:
+        case BCM56377_DEVICE_ID:
+        case BCM56577_DEVICE_ID:
+        case BCM56578_DEVICE_ID:
+        case BCM56579_DEVICE_ID:
+            ctrl->isr = (isr_f)_cmicx_interrupt;
+            if (ctrl->dev_type & BDE_AXI_DEV_TYPE) {
+                if (!ihost_intr_enable_base) {
+                    ihost_intr_enable_base = (uint32_t *)IOREMAP(HX5_IHOST_GICD_ISENABLERN_1,
+                                                                 HX5_IHOST_INTR_MAP_NUM);
+                }
+                if (!ihost_intr_status_base) {
+                    ihost_intr_status_base = (uint32_t *)IOREMAP(HX5_INTC_INTR_RAW_STATUS_REG0,
+                                                                 HX5_IHOST_INTR_STATUS_MAP_NUM);
+                }
+            }
             break;
         default:
             /* Get CMIC version */
             if (user_bde->get_cmic_ver(d, &ver) != 0) {
                 ver = -1;
             }
+            device_id = ctrl->devid & device_id_mask;
+            /* TH/TH+/TH2 should use cmicd interrupt handler */
+            if (BCM56960_DEVICE_ID == device_id ||
+                BCM56930_DEVICE_ID == device_id ||
+                BCM56970_DEVICE_ID == device_id) {
+                ctrl->isr = (isr_f)_cmicd_interrupt;
+            }
             /* check if version is CMICX */
-            if (ver == 0x04) {
+            else if (ver == 0x04) {
                  ctrl->isr = (isr_f)_cmicx_interrupt;
             } else {
                 ctrl->isr = (isr_f)_cmic_interrupt;
@@ -697,6 +865,18 @@ _devices_init(int d)
                 }
             }
             break;
+        }
+
+#ifdef BCM_DNX_SUPPORT
+        /*All Jericho 2 devices from 0x8690 to 0x869F*/
+        if (SOC_IS_JERICHO_2_TYPE(user_bde->get_dev(d)->device)) {
+          ctrl->isr = (isr_f)_cmicx_interrupt;
+        }
+#endif
+
+        /*All Ramon devices from 0x8790 to 0x879F*/
+        if ((user_bde->get_dev(d)->device & BCM88790_DEVICE_ID) == BCM88790_DEVICE_ID) {
+            ctrl->isr = (isr_f)_cmicx_interrupt;
         }
         if (_intr_mode_str(ctrl->isr) == NULL) {
             gprintk("Warning: Unknown interrupt mode\n");
@@ -746,10 +926,14 @@ _init(void)
     init_waitqueue_head(&res->intr_wq);
     atomic_set(&res->intr, 0);
 
+    ihost_intr_enable_base = NULL;
+    ihost_intr_status_base = NULL;
+
     for (i = 0; i < user_bde->num_devices(BDE_ALL_DEVICES); i++) {
         res->inst_id |= (1 << i);
         _devices_init(i);
     }
+
     return 0;
 }
 
@@ -779,6 +963,16 @@ _cleanup(void)
         linux_bde_destroy(user_bde);
         user_bde = NULL;
     }
+
+    if (ihost_intr_enable_base) {
+        iounmap(ihost_intr_enable_base);
+        ihost_intr_enable_base = NULL;
+    }
+    if (ihost_intr_status_base) {
+        iounmap(ihost_intr_status_base);
+        ihost_intr_status_base = NULL;
+    }
+
     return 0;
 }
 
@@ -906,6 +1100,7 @@ static int
 _device_reprobe(void)
 {
     int i;
+
     for (i = 0; i < user_bde->num_devices(BDE_ALL_DEVICES); i++) {
         if (_devices[i].devid == 0) {
             _devices_init(i);
@@ -985,7 +1180,8 @@ _ioctl(unsigned int cmd, unsigned long arg)
     ssize_t size;
     const ibde_dev_t *bde_dev;
     int inst_id;
-     bde_inst_resource_t *res;
+    bde_inst_resource_t *res;
+    uint32_t *mapaddr;
 
     if (copy_from_user(&io, (void *)arg, sizeof(io))) {
         return -EFAULT;
@@ -1002,7 +1198,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_GET_DEVICE:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         bde_dev = user_bde->get_dev(io.dev);
         if (bde_dev) {
@@ -1019,7 +1215,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_GET_DEVICE_TYPE:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         io.d0 = _devices[io.dev].dev_type;
         break;
@@ -1029,7 +1225,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_PCI_CONFIG_PUT32:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         if (_devices[io.dev].dev_type & BDE_PCI_DEV_TYPE) {
             user_bde->pci_conf_write(io.dev, io.d0, io.d1);
@@ -1039,7 +1235,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_PCI_CONFIG_GET32:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         if (_devices[io.dev].dev_type & BDE_PCI_DEV_TYPE) {
             io.d0 = user_bde->pci_conf_read(io.dev, io.d0);
@@ -1068,7 +1264,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_ENABLE_INTERRUPTS:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         if (_devices[io.dev].dev_type & BDE_SWITCH_DEV_TYPE) {
             if (_devices[io.dev].isr && !_devices[io.dev].enabled) {
@@ -1090,7 +1286,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_DISABLE_INTERRUPTS:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         if (_devices[io.dev].enabled) {
             user_bde->interrupt_disconnect(io.dev);
@@ -1099,7 +1295,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
         break;
     case LUBDE_WAIT_FOR_INTERRUPT:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         if (_devices[io.dev].dev_type & BDE_SWITCH_DEV_TYPE) {
             res = &_bde_inst_resource[_devices[io.dev].inst];
@@ -1132,30 +1328,9 @@ _ioctl(unsigned int cmd, unsigned long arg)
         }
         break;
     case LUBDE_USLEEP:
-        sal_usleep(io.d0);
-        break;
     case LUBDE_UDELAY:
-        sal_udelay(io.d0);
-        break;
     case LUBDE_SEM_OP:
-        switch (io.d0) {
-        case LUBDE_SEM_OP_CREATE:
-            io.p0 = (bde_kernel_addr_t)sal_sem_create("", io.d1, io.d2);
-            break;
-        case LUBDE_SEM_OP_DESTROY:
-            sal_sem_destroy((sal_sem_t)io.p0);
-            break;
-        case LUBDE_SEM_OP_TAKE:
-            io.rc = sal_sem_take((sal_sem_t)io.p0, io.d2);
-            break;
-        case LUBDE_SEM_OP_GIVE:
-            io.rc = sal_sem_give((sal_sem_t)io.p0);
-            break;
-        default:
-            io.rc = LUBDE_FAIL;
-            break;
-        }
-        break;
+        return -EINVAL;
     case LUBDE_WRITE_IRQ_MASK:
         io.rc = lkbde_irq_mask_set(io.dev, io.d0, io.d1, 0);
         break;
@@ -1175,7 +1350,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
     case LUBDE_WRITE_REG_16BIT_BUS:
         io.rc = user_bde->write(io.dev, io.d0, io.d1);
         break;
-#if (defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT))
+#ifdef BCM_SAND_SUPPORT
     case LUBDE_CPU_WRITE_REG:
     {
         if (lkbde_cpu_write(io.dev, io.d0, (uint32*)io.dx.buf) == -1) {
@@ -1200,7 +1375,7 @@ _ioctl(unsigned int cmd, unsigned long arg)
 #endif
     case LUBDE_DEV_RESOURCE:
         if (!VALID_DEVICE(io.dev)) {
-          return -EINVAL;
+            return -EINVAL;
         }
         bde_dev = user_bde->get_dev(io.dev);
         if (bde_dev) {
@@ -1214,9 +1389,22 @@ _ioctl(unsigned int cmd, unsigned long arg)
         }
         break;
     case LUBDE_IPROC_READ_REG:
-        io.d1 = user_bde->iproc_read(io.dev, io.d0);
-        if (io.d1 == -1) {
-            io.rc = LUBDE_FAIL;
+        if (!VALID_DEVICE(io.dev)) {
+            return -EINVAL;
+        }
+        if (_devices[io.dev].dev_type & BDE_AXI_DEV_TYPE) {
+            mapaddr = IOREMAP(io.d0, sizeof(uint32_t));
+            if (mapaddr == NULL) {
+                io.rc = LUBDE_FAIL;
+                return -1;
+            }
+            io.d1 = readl(mapaddr);
+            iounmap(mapaddr);
+        } else {
+            io.d1 = user_bde->iproc_read(io.dev, io.d0);
+            if (io.d1 == -1) {
+                io.rc = LUBDE_FAIL;
+            }
         }
         break;
     case LUBDE_IPROC_WRITE_REG:
@@ -1230,12 +1418,15 @@ _ioctl(unsigned int cmd, unsigned long arg)
     case LUBDE_GET_DEVICE_STATE:
         io.rc = lkbde_dev_state_get(io.dev, &io.d0);
         break;
+    case LUBDE_REPROBE:
+        io.rc = _device_reprobe();
+        break;
     default:
         gprintk("Error: Invalid ioctl (%08x)\n", cmd);
         io.rc = LUBDE_FAIL;
         break;
     }
-  
+
     if (copy_to_user((void *)arg, &io, sizeof(io))) {
         return -EFAULT;
     }

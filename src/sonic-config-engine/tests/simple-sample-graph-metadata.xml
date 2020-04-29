@@ -216,6 +216,11 @@
      <a:Value>1</a:Value>
     </a:DeviceProperty>
     <a:DeviceProperty>
+     <a:Name>Region</a:Name>
+     <a:Reference i:nil="true"/>
+     <a:Value>usfoo</a:Value>
+    </a:DeviceProperty>
+    <a:DeviceProperty>
      <a:Name>ErspanDestinationIpv4</a:Name>
      <a:Reference i:nil="true"/>
      <a:Value>10.0.100.1</a:Value>
@@ -310,6 +315,19 @@
       <FlowControl>true</FlowControl>
       <Height>0</Height>
       <HwSku>Force10-S6000</HwSku>
+      <ManagementInterfaces xmlns:a="http://schemas.datacontract.org/2004/07/Microsoft.Search.Autopilot.Evolution">
+	<a:ManagementInterface>
+	  <ElementType>DeviceInterface</ElementType>
+	  <AlternateSpeeds i:nil="true"/>
+	  <EnableAutoNegotiation>true</EnableAutoNegotiation>
+	  <EnableFlowControl>true</EnableFlowControl>
+	  <Index>1</Index>
+	  <InterfaceName>Management1</InterfaceName>
+	  <MultiPortsInterface>false</MultiPortsInterface>
+	  <PortName>mgmt1</PortName>
+	  <Speed>1000</Speed>
+  	</a:ManagementInterface>
+      </ManagementInterfaces>
     </DeviceInfo>
   </DeviceInfos>
   <Hostname>switch-t0</Hostname>

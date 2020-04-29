@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /***********************************************************************
  *
@@ -199,6 +198,11 @@ extern void *lkbde_get_dma_dev(int d);
 extern void *lkbde_get_hw_dev(int d);
 
 /*
+ * Backdoor to retrieve number of switch devices probed.
+ */
+extern int lkbde_get_num_devices(int type);
+
+/*
  * Retrive the device state from Kernel BDE.
  * Used for KNET and User BDE for pci hot swap case.
  */
@@ -218,7 +222,7 @@ extern int lkbde_dev_instid_set(int d, uint32 instid);
 extern int lkbde_irq_mask_set(int d, uint32 addr, uint32 mask, uint32 fmask);
 extern int lkbde_irq_mask_get(int d, uint32 *mask, uint32 *fmask);
 
-#if (defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT))
+#ifdef BCM_SAND_SUPPORT
 extern int lkbde_cpu_write(int d, uint32 addr, uint32 *buf);
 extern int lkbde_cpu_read(int d, uint32 addr, uint32 *buf);
 extern int lkbde_cpu_pci_register(int d);
@@ -230,15 +234,18 @@ extern int lkbde_cpu_pci_register(int d);
  * a secondary device driver.
  */
 #define LKBDE_ISR2_DEV  0x8000
+/*
+ * This flag should be OR'ed onto the device number when calling
+ * irq_mask_set functions from a secondary device driver if the
+ * mask register is iProc register.
+ */
+#define LKBDE_IPROC_REG 0x4000
 
-#if defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT)
+#ifdef BCM_SAND_SUPPORT
 #include <linux/version.h>
 #if defined(__DUNE_LINUX_BCM_CPU_PCIE__) && LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26)
 #ifndef _SIMPLE_MEMORY_ALLOCATION_
 #define _SIMPLE_MEMORY_ALLOCATION_ 1
-#endif
-#ifndef USE_LINUX_BDE_MMAP
-#define USE_LINUX_BDE_MMAP 1
 #endif
 #endif
 #endif
@@ -261,13 +268,9 @@ extern int lkbde_cpu_pci_register(int d);
 #define _SIMPLE_MEMORY_ALLOCATION_ 9 /* compile in the allocation method, but do not use it by default */
 #endif
 
-/* By default we use our private mmap only if /dev/mem mmap has restrictions */
+/* By default we use our private mmap for DMA pool */
 #ifndef USE_LINUX_BDE_MMAP
-#ifdef CONFIG_STRICT_DEVMEM
 #define USE_LINUX_BDE_MMAP 1
-#else
-#define USE_LINUX_BDE_MMAP 0
-#endif
 #endif
 
 #endif /* __KERNEL__ */

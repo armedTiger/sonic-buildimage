@@ -59,15 +59,16 @@ class TestCfgGenCaseInsensitive(TestCase):
         output = self.run_script(argument)
         self.assertEqual(output.strip(), 'value1\nvalue2')
 
-    def test_minigraph_everflow(self):
-        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v MIRROR_SESSION'
-        output = self.run_script(argument)
-        self.assertEqual(output.strip(), "{'everflow0': {'src_ip': '10.1.0.32', 'dst_ip': '10.0.100.1'}}")
+#     everflow portion is not used
+#     def test_minigraph_everflow(self):
+#         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v MIRROR_SESSION'
+#         output = self.run_script(argument)
+#         self.assertEqual(output.strip(), "{'everflow0': {'src_ip': '10.1.0.32', 'dst_ip': '10.0.100.1'}}")
 
     def test_minigraph_interfaces(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v \'INTERFACE.keys()\''
         output = self.run_script(argument)
-        self.assertEqual(output.strip(), "[('Ethernet0', '10.0.0.58/31'), ('Ethernet0', 'FC00::75/126')]")
+        self.assertEqual(output.strip(), "[('Ethernet0', '10.0.0.58/31'), 'Ethernet0', ('Ethernet0', 'FC00::75/126')]")
 
     def test_minigraph_vlans(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v VLAN'
@@ -77,12 +78,12 @@ class TestCfgGenCaseInsensitive(TestCase):
     def test_minigraph_vlan_members(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v VLAN_MEMBER'
         output = self.run_script(argument)
-        self.assertEqual(output.strip(), "{'Vlan1000|Ethernet8': {'tagging_mode': 'untagged'}}")
+        self.assertEqual(output.strip(), "{('Vlan1000', 'Ethernet8'): {'tagging_mode': 'untagged'}}")
 
     def test_minigraph_vlan_interfaces(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "VLAN_INTERFACE.keys()"'
         output = self.run_script(argument)
-        self.assertEqual(output.strip(), "[('Vlan1000', '192.168.0.1/27')]")
+        self.assertEqual(output.strip(), "[('Vlan1000', '192.168.0.1/27'), 'Vlan1000']")
 
     def test_minigraph_portchannels(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v PORTCHANNEL'
@@ -104,18 +105,39 @@ class TestCfgGenCaseInsensitive(TestCase):
         output = self.run_script(argument)
         self.assertEqual(output.strip(), "{'switch-01t1': {'lo_addr': '10.1.0.186/32', 'mgmt_addr': '10.7.0.196/26', 'hwsku': 'Force10-S6000', 'type': 'LeafRouter', 'deployment_id': '2'}}")
 
-    def test_metadata_everflow(self):
-        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "MIRROR_SESSION"'
-        output = self.run_script(argument)
-        self.assertEqual(output.strip(), "{'everflow0': {'src_ip': '10.1.0.32', 'dst_ip': '10.0.100.1'}}")
+#     everflow portion is not used
+#     def test_metadata_everflow(self):
+#         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "MIRROR_SESSION"'
+#         output = self.run_script(argument)
+#         self.assertEqual(output.strip(), "{'everflow0': {'src_ip': '10.1.0.32', 'dst_ip': '10.0.100.1'}}")
 
     def test_metadata_tacacs(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "TACPLUS_SERVER"'
         output = self.run_script(argument)
         self.assertEqual(output.strip(), "{'10.0.10.7': {'priority': '1', 'tcp_port': '49'}, '10.0.10.8': {'priority': '1', 'tcp_port': '49'}}")
 
+    def test_minigraph_mgmt_port(self):
+        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "MGMT_PORT"'
+        output = self.run_script(argument)
+        self.assertEqual(output.strip(), "{'eth0': {'alias': 'eth0', 'admin_status': 'up', 'speed': '1000'}}")
+
     def test_metadata_ntp(self):
         argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "NTP_SERVER"'
         output = self.run_script(argument)
         self.assertEqual(output.strip(), "{'10.0.10.1': {}, '10.0.10.2': {}}")
+
+    def test_minigraph_vnet(self):
+        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "VNET"'
+        output = self.run_script(argument)
+        self.assertEqual(output.strip(), "")
+
+    def test_minigraph_vxlan(self):
+        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "VXLAN_TUNNEL"'
+        output = self.run_script(argument)
+        self.assertEqual(output.strip(), "")
+
+    def test_minigraph_bgp_mon(self):
+        argument = '-m "' + self.sample_graph + '" -p "' + self.port_config + '" -v "BGP_MONITORS"'
+        output = self.run_script(argument)
+        self.assertEqual(output.strip(), "{}")
 

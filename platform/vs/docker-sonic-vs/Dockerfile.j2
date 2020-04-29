@@ -1,4 +1,4 @@
-FROM docker-config-engine
+FROM docker-config-engine-stretch
 
 ARG docker_container_name
 RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%syslogtag%/;" /etc/rsyslog.conf
@@ -6,6 +6,7 @@ RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%s
 ## Make apt-get non-interactive
 ENV DEBIAN_FRONTEND=noninteractive
 
+RUN apt-get install -y gnupg
 COPY ["sonic-dev.gpg.key", "/etc/apt/"]
 RUN apt-key add /etc/apt/sonic-dev.gpg.key
 RUN echo "deb http://packages.microsoft.com/repos/sonic-dev/ jessie main" >> /etc/apt/sources.list
@@ -21,20 +22,15 @@ RUN apt-get install -y net-tools \
                        python-ply \
                        libqt5core5a \
                        libqt5network5 \
-                       libboost-program-options1.55.0 \
-                       libboost-system1.55.0 \
-                       libboost-thread1.55.0 \
+                       libboost-program-options1.62.0 \
+                       libboost-system1.62.0 \
+                       libboost-thread1.62.0 \
                        libgmp10 \
                        libjudydebian1 \
-                       libnanomsg0 \
-                       libdaemon0 \
-                       libjansson4 \
-                       libjemalloc1 \
                        openssh-client \
                        openssh-server \
                        libc-ares2 \
                        iproute \
-                       libpython2.7 \
                        grub2-common \
                        python-click-default-group \
                        python-click \
@@ -42,11 +38,20 @@ RUN apt-get install -y net-tools \
                        python-tabulate \
                        bash-completion \
                        libelf1 \
-                       libmnl0
+                       libmnl0 \
+                       logrotate \
+                       apt-utils \
+                       psmisc \
+                       tcpdump \
+                       python-scapy \
+                       conntrack \
+                       iptables
 
 RUN pip install setuptools
 RUN pip install py2_ipaddress
 RUN pip install six
+RUN pip install pyroute2==0.5.3 netifaces==0.10.7
+RUN pip install monotonic==1.5
 
 {% if docker_sonic_vs_debs.strip() -%}
 # Copy locally-built Debian package dependencies
@@ -56,6 +61,18 @@ COPY debs/{{ deb }} /debs/
 
 # Install locally-built Debian packages and implicitly install their dependencies
 {%- for deb in docker_sonic_vs_debs.split(' ') %}
+RUN dpkg_apt() { [ -f $1 ] && { dpkg -i $1 || apt-get -y install -f; } || return 1; }; dpkg_apt /debs/{{ deb }}
+{%- endfor %}
+{%- endif %}
+
+{% if docker_sonic_vs_pydebs.strip() -%}
+# Copy locally-built Debian package dependencies
+{%- for deb in docker_sonic_vs_pydebs.split(' ') %}
+COPY python-debs/{{ deb }} /debs/
+{%- endfor %}
+
+# Install locally-built Debian packages and implicitly install their dependencies
+{%- for deb in docker_sonic_vs_pydebs.split(' ') %}
 RUN dpkg_apt() { [ -f $1 ] && { dpkg -i $1 || apt-get -y install -f; } || return 1; }; dpkg_apt /debs/{{ deb }}
 {%- endfor %}
 {%- endif %}
@@ -72,19 +89,30 @@ RUN sed -ri 's/^(save .*$)/# \1/g;                                              
              s/^# syslog-enabled no$/syslog-enabled no/;                                \
              s/^# unixsocket/unixsocket/;                                               \
              s/notify-keyspace-events ""/notify-keyspace-events AKE/;                   \
+             s/redis-server.sock/redis.sock/g;                                          \
              s/^client-output-buffer-limit pubsub [0-9]+mb [0-9]+mb [0-9]+/client-output-buffer-limit pubsub 0 0 0/ \
             ' /etc/redis/redis.conf
 
 COPY ["50-default.conf", "/etc/rsyslog.d/"]
 COPY ["start.sh", "orchagent.sh", "/usr/bin/"]
-COPY ["brcm.profile.ini", "/usr/share/sonic/device/vswitch/"]
-COPY ["buffers.json.j2", "/usr/share/sonic/device/vswitch/"]
-COPY ["pg_profile_lookup.ini", "/usr/share/sonic/device/vswitch/"]
 COPY ["supervisord.conf", "/etc/supervisor/conf.d/"]
 COPY ["files/configdb-load.sh", "/usr/bin/"]
-COPY ["files/arp_update", "/usr/bin"]
+COPY ["files/arp_update", "/usr/bin/"]
+COPY ["files/buffers_config.j2", "files/qos_config.j2", "/usr/share/sonic/templates/"]
+COPY ["files/sonic_version.yml", "/etc/sonic/"]
+COPY ["database_config.json", "/etc/default/sonic-db/"]
+
+# Workaround the tcpdump issue
+RUN mv /usr/sbin/tcpdump /usr/bin/tcpdump
 
 RUN echo "docker-sonic-vs" > /etc/hostname
+RUN mkdir -p /etc/quagga
 RUN touch /etc/quagga/zebra.conf
+
+# disable integrated vtysh config
+RUN rm /etc/frr/frr.conf
+
+# Create /var/warmboot/teamd folder for teammgrd
+RUN mkdir -p /var/warmboot/teamd
 
 ENTRYPOINT ["/usr/bin/supervisord"]

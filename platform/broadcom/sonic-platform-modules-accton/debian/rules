@@ -19,11 +19,12 @@ PACKAGE_PRE_NAME := sonic-platform-accton
 KVERSION   ?= $(shell uname -r)
 KERNEL_SRC :=  /lib/modules/$(KVERSION)
 MOD_SRC_DIR:= $(shell pwd)
-MODULE_DIRS:= as7712-32x as5712-54x as7816-64x as7716-32x as7716-32xb as7312-54x as7326-56x
+MODULE_DIRS := as7712-32x as5712-54x as7816-64x as7716-32x as7716-32xb as7312-54x
+MODULE_DIRS += as7326-56x as6712-32x as7726-32x as4630-54pe minipack as5812-54x 
+MODULE_DIRS += as5835-54x as9716-32d as5835-54t as7312-54xs as7315-27xb as5812-54t
 MODULE_DIR := modules
 UTILS_DIR := utils
 SERVICE_DIR := service
-CLASSES_DIR := classes
 CONF_DIR := conf
 
 %:
@@ -59,9 +60,9 @@ binary-indep:
 
 	# Custom package commands
 	(for mod in $(MODULE_DIRS); do \
-		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod}/$(KERNEL_SRC)/$(INSTALL_MOD_DIR); \
-		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod}/usr/local/bin; \
-		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod}/lib/systemd/system; \
+		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod} $(KERNEL_SRC)/$(INSTALL_MOD_DIR); \
+		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod} usr/local/bin; \
+		dh_installdirs -p$(PACKAGE_PRE_NAME)-$${mod} lib/systemd/system; \
 		cp $(MOD_SRC_DIR)/$${mod}/$(MODULE_DIR)/*.ko debian/$(PACKAGE_PRE_NAME)-$${mod}/$(KERNEL_SRC)/$(INSTALL_MOD_DIR); \
 		cp $(MOD_SRC_DIR)/$${mod}/$(UTILS_DIR)/* debian/$(PACKAGE_PRE_NAME)-$${mod}/usr/local/bin/; \
 		cp $(MOD_SRC_DIR)/$${mod}/$(SERVICE_DIR)/*.service debian/$(PACKAGE_PRE_NAME)-$${mod}/lib/systemd/system/; \

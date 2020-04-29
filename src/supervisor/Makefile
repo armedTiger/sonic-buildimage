@@ -21,6 +21,10 @@ $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	stg init
 	stg import -s ../patch/series
 
+ifneq (,$(filter $(CONFIGURED_ARCH), armhf arm64))
+	stg import -s ../patch/series-armhf
+endif
+
 	# Build Python and Debian package
 	python setup.py --command-packages=stdeb.command bdist_deb
 	popd

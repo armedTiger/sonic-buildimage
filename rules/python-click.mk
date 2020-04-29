@@ -7,7 +7,7 @@
 # TODO: If we upgrade to a distro which provides a version >= 6.7 we will no
 # longer need to build this.
 
-PYTHON_CLICK_VERSION = 6.7-4
+PYTHON_CLICK_VERSION = 7.0-1
 
 export PYTHON_CLICK_VERSION
 

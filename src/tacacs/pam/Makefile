@@ -2,9 +2,9 @@
 SHELL = /bin/bash
 .SHELLFLAGS += -e
 
-MAIN_TARGET = libpam-tacplus_$(PAM_TACPLUS_VERSION)_amd64.deb
-DERIVED_TARGETS = libtac2_$(PAM_TACPLUS_VERSION)_amd64.deb \
-		  libtac-dev_$(PAM_TACPLUS_VERSION)_amd64.deb
+MAIN_TARGET = libpam-tacplus_$(PAM_TACPLUS_VERSION)_$(CONFIGURED_ARCH).deb
+DERIVED_TARGETS = libtac2_$(PAM_TACPLUS_VERSION)_$(CONFIGURED_ARCH).deb \
+		  libtac-dev_$(PAM_TACPLUS_VERSION)_$(CONFIGURED_ARCH).deb
 
 $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	# Obtain pam_tacplus
@@ -17,6 +17,8 @@ $(addprefix $(DEST)/, $(MAIN_TARGET)): $(DEST)/% :
 	git apply ../0001-Don-t-init-declarations-in-a-for-loop.patch
 	git apply ../0002-Fix-libtac2-bin-install-directory-error.patch
 	git apply ../0003-Obfuscate-key-before-printing-to-syslog.patch
+	git apply ../0004-management-vrf-support.patch
+	git apply ../0005-pam-Modify-parsing-of-IP-address-and-port-number-to-.patch
 
 	dpkg-buildpackage -rfakeroot -b -us -uc
 	popd

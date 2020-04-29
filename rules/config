@@ -16,6 +16,22 @@ SONIC_CONFIG_BUILD_JOBS = 1
 # Corresponding -j argument will be passed to make/dpkg commands that build separate packages
 SONIC_CONFIG_MAKE_JOBS = $(shell nproc)
 
+# DEFAULT_BUILD_LOG_TIMESTAMP - add timestamp in build log
+# Supported format: simple, none
+DEFAULT_BUILD_LOG_TIMESTAMP = none
+
+# SONIC_USE_DOCKER_BUILDKIT - use docker buildkit for build.
+# If set to y SONiC build system will set environment variable DOCKER_BUILDKIT=1
+# to enable docker buildkit.
+# This options will speed up docker image build time.
+# NOTE: SONIC_USE_DOCKER_BUILDKIT will produce larger installable SONiC image
+# because of a docker bug (more details: https://github.com/moby/moby/issues/38903)
+# SONIC_USE_DOCKER_BUILDKIT = y
+
+# SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD - use native dockerd for build.
+# If set to y SONiC build container will use native dockerd instead of dind for faster build
+# SONIC_CONFIG_USE_NATIVE_DOCKERD_FOR_BUILD = y
+
 # SONIC_CONFIG_ENABLE_COLORS - enable colored output in build system.
 # Comment next line to disable:
 # SONIC_CONFIG_ENABLE_COLORS = y
@@ -32,6 +48,9 @@ DEFAULT_PASSWORD = YourPaSsWoRd
 # If not set (default behavior) the default minigraph built into the image will be used.
 # ENABLE_DHCP_GRAPH_SERVICE = y
 
+# ENABLE_ZTP - installs Zero Touch Provisioning support.
+# ENABLE_ZTP = y
+
 # SHUTDOWN_BGP_ON_START - if set to y all bgp sessions will be in admin down state when
 # bgp service starts.
 # SHUTDOWN_BGP_ON_START = y
@@ -40,14 +59,14 @@ DEFAULT_PASSWORD = YourPaSsWoRd
 # by default for TOR switch
 # ENABLE_PFCWD_ON_START = y
 
-# SONIC_INSTALL_DEBUG_TOOLS - installs debugging tools in baseline docker
+# INSTALL_DEBUG_TOOLS - installs debugging tools in baseline docker
 # Uncomment next line to enable:
-# SONIC_INSTALL_DEBUG_TOOLS = y
+# INSTALL_DEBUG_TOOLS = y
 
 # SONIC_ROUTING_STACK - specify the routing-stack being elected to drive SONiC's control-plane.
-# Quagga will be the default routing-stack for all the SONiC platforms. Other supported
-# routing-stacks: frr, gobgp.
-SONIC_ROUTING_STACK = quagga
+# Supported routing stacks on SONiC are:
+# routing-stacks: quagga, frr.
+SONIC_ROUTING_STACK = frr
 
 # ENABLE_SYNCD_RPC - build docker-syncd with rpc packages for testing purposes.
 # Uncomment to enable:
@@ -65,9 +84,64 @@ ENABLE_ORGANIZATION_EXTENSIONS = y
 #SONIC_PROFILING_ON = y
 
 # ENABLE_SYSTEM_TELEMETRY - build docker-sonic-telemetry for system telemetry support
-# ENABLE_SYSTEM_TELEMETRY = y
+ENABLE_SYSTEM_TELEMETRY = y
 
 # DEFAULT_KERNEL_PROCURE_METHOD - default method for obtaining kernel
 #   build:    build kernel from source
 #   download: download pre-built kernel from Azure storage.
 DEFAULT_KERNEL_PROCURE_METHOD = build
+
+# FRR user and group id values. These only take effect when SONIC_ROUTING_STACK is frr.
+# Note: these values match the admin uid/gid of the host's admin account. If these values
+# change and user doesn't want the frr uid/gid to potentially match a random user on the
+# host, then either the appropriate account and group will need to be created on the host
+# manually or changes need to be made when the image is built to create the account and
+# group during installation.
+FRR_USER_UID = 300
+FRR_USER_GID = 300
+
+# DPKG cache allows the .deb files to be stored in the cache path. This allows the submodules
+# package to be cached and restored back if its commit hash is not modified and its dependencies are not modified.
+# SONIC_DPKG_CACHE_METHOD - Default method of deb package caching
+#	none    :  no caching
+#	rwcache :  Use cache if exists else build the source and update the cache
+#	wcache  :  Dont use the cache and just build the source and update the cache
+#	rcache  :  Use cache if exists, but dont update the cache
+#	cache   :  Same as rwcache
+# SONIC_DPKG_CACHE_SOURCE - Stores the cache location details
+SONIC_DPKG_CACHE_METHOD ?= none
+SONIC_DPKG_CACHE_SOURCE ?= /var/cache/sonic/artifacts
+
+# Default VS build memory preparation
+DEFAULT_VS_PREPARE_MEM = yes
+
+
+# ENABLE_ICCPD - build docker-iccpd for mclag support
+ENABLE_ICCPD = y
+
+# ENABLE_SYSTEM_SFLOW - build docker-sonic-sflow for sFlow support
+ENABLE_SFLOW = y
+
+# ENABLE_MGMT_FRAMEWORK - build docker-sonic-mgt-framework for CLI and REST server support
+ENABLE_MGMT_FRAMEWORK = y
+
+# ENABLE_RESTAPI - build docker-sonic-restapi for configuring the switch using REST APIs
+ENABLE_RESTAPI = n
+
+# ENABLE_NAT - build docker-sonic-nat for nat support
+ENABLE_NAT = y
+
+# INSTALL_KUBERNETES - if set to y kubernetes packages are installed to be able to
+# run as worker node in kubernetes cluster.
+INSTALL_KUBERNETES = n
+
+# KUBERNETES_VERSION - Set to the required version.
+# K8s_GCR_IO_PAUSE_VERSION - Version of k8s universal pause container image
+# K8s_CNI_CALICO_VERSION - Calico used as CNI; Appropriate version for this Kubernetes version
+# These are Used *only* when INSTALL_KUBERNETES=y
+# NOTE: As a worker node it has to run version compatible to kubernetes master.
+#
+KUBERNETES_VERSION = 1.18.0
+K8s_GCR_IO_PAUSE_VERSION = 3.2
+K8s_CNI_CALICO_VERSION = 3.12.1
+

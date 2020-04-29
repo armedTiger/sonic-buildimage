@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 #
-# Copyright (C) 2017 Accton Technology Corporation
+# Copyright (C) 2019 Accton Technology Corporation
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 # HISTORY:
 #    mm/dd/yyyy (A.D.)
 #    11/13/2017: Polly Hsu, Create
-#
+#    05/08/2019: Roy Lee, changed for as5712-54x.
 # ------------------------------------------------------------------
 
 try:
@@ -33,6 +33,7 @@ try:
     import types
     import time  # this is only being used as part of the example
     import traceback
+    import signal
     from tabulate import tabulate
     from as5712_54x.fanutil import FanUtil
     from as5712_54x.thermalutil import ThermalUtil
@@ -42,6 +43,7 @@ except ImportError as e:
 # Deafults
 VERSION = '1.0'
 FUNCTION_NAME = 'accton_as5712_monitor'
+DUTY_MAX = 100
 
 global log_file
 global log_level
@@ -51,7 +53,6 @@ class accton_as5712_monitor(object):
     # static temp var
     _ori_temp = 0
     _new_perc = 0
-    _ori_perc = 0
 
     def __init__(self, log_file, log_level):
         """Needs a logger and a logger level."""
@@ -75,9 +76,9 @@ class accton_as5712_monitor(object):
         logging.debug('SET. logfile:%s / loglevel:%d', log_file, log_level)
 
     def manage_fans(self):
-        FAN_LEV1_UP_TEMP = 57500  # temperature
+        FAN_LEV1_UP_TEMP = 57700  # temperature
         FAN_LEV1_DOWN_TEMP = 0    # unused
-        FAN_LEV1_SPEED_PERC = 100 # percentage*/
+        FAN_LEV1_SPEED_PERC = DUTY_MAX # percentage*/
 
         FAN_LEV2_UP_TEMP = 53000
         FAN_LEV2_DOWN_TEMP = 52700
@@ -149,8 +150,9 @@ class accton_as5712_monitor(object):
                     self._new_perc = FAN_LEV1_SPEED_PERC
                 logging.debug('INFO. SET. FAN_SPEED as %d (new THERMAL temp:%d)', self._new_perc, new_temp)
 
-        if self._ori_perc == self._new_perc:
-            logging.debug('INFO. RETURN. FAN speed not changed. %d / %d (new_perc / ori_perc)', self._new_perc, self._ori_perc)
+        cur_perc = fan.get_fan_duty_cycle(fan.get_idx_fan_start())
+        if cur_perc == self._new_perc:
+            logging.debug('INFO. RETURN. FAN speed not changed. %d / %d (new_perc / ori_perc)', self._new_perc, cur_perc)
             return True
 
         set_stat = fan.set_fan_duty_cycle(fan.get_idx_fan_start(), self._new_perc)
@@ -159,12 +161,17 @@ class accton_as5712_monitor(object):
         else:
             logging.debug('INFO: FAIL. set_fan_duty_cycle (%d)', self._new_perc)
 
-        logging.debug('INFO: GET. ori_perc is %d. ori_temp is %d', self._ori_perc, self._ori_temp)
-        self._ori_perc = self._new_perc
+        logging.debug('INFO: GET. ori_perc is %d. ori_temp is %d', cur_perc, self._ori_temp)
         self._ori_temp = new_temp
-        logging.debug('INFO: UPDATE. ori_perc to %d. ori_temp to %d', self._ori_perc, self._ori_temp)
+        logging.debug('INFO: UPDATE. ori_perc to %d. ori_temp to %d', cur_perc, self._ori_temp)
 
         return True
+
+def handler(signum, frame):
+        fan = FanUtil()
+        logging.debug('INFO:Cause signal %d, set fan speed max.', signum)
+        fan.set_fan_duty_cycle(fan.get_idx_fan_start(), DUTY_MAX)
+        sys.exit(0)
 
 def main(argv):
     log_file = '%s.log' % FUNCTION_NAME
@@ -184,12 +191,14 @@ def main(argv):
             elif opt in ('-l', '--lfile'):
                 log_file = arg
 
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
     monitor = accton_as5712_monitor(log_file, log_level)
 
     # Loop forever, doing something useful hopefully:
     while True:
         monitor.manage_fans()
-        time.sleep(1)
+        time.sleep(10)
 
 if __name__ == '__main__':
     main(sys.argv[1:])

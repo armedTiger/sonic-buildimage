@@ -1,0 +1,36 @@
+{
+    "DEVICE_METADATA": {
+        "localhost": {
+            "default_bgp_status": {% if shutdown_bgp_on_start == "y" %}"down"{% else %}"up"{% endif %},
+            "default_pfcwd_status": {% if enable_pfcwd_on_start == "y" %}"enable"{% else %}"disable"{% endif %}
+        }
+    },
+    "CRM": {
+        "Config": {
+            "polling_interval": "300",
+{%- for crm_res in ["ipv4_route", "ipv6_route", "ipv4_nexthop", "ipv6_nexthop", "ipv4_neighbor",
+                    "ipv6_neighbor", "nexthop_group_member", "nexthop_group", "acl_table",
+                    "acl_group", "acl_entry", "acl_counter", "fdb_entry"] %}
+            "{{crm_res}}_threshold_type": "percentage",
+            "{{crm_res}}_low_threshold": "70",
+            "{{crm_res}}_high_threshold": "85"{% if not loop.last %},{% endif -%}
+{% endfor %}
+        }
+    },
+    "FEATURE": {
+{%- for feature in ["sflow", "telemetry"] %}
+        "{{feature}}": {
+            "status": "disabled"
+        }{% if not loop.last %},{% endif -%}
+{% endfor %}
+    },
+    "CONTAINER_FEATURE": {
+{%- for container in ["bgp", "database", "dhcp_relay", "lldp", "nat", "pmon", "radv", "restapi", "sflow",
+                      "snmp", "swss", "syncd", "teamd", "telemetry"] %}
+        "{{container}}": {
+            "auto_restart": "disabled",
+            "high_mem_alert": "disabled"
+        }{% if not loop.last %},{% endif -%}
+{% endfor %}
+    }
+}

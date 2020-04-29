@@ -1,18 +1,17 @@
 #
-#  Unless you and Broadcom execute a separate written software license
-#  agreement governing use of this software, this software is licensed to
-#  you under the terms of the GNU General Public License version 2 (the
-#  "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
-#  with the following added to such license:
+#  Copyright 2017 Broadcom
 #  
-#  As a special exception, the copyright holders of this software give
-#  you permission to link this software with independent modules, and to
-#  copy and distribute the resulting executable under terms of your
-#  choice, provided that you also meet, for each linked independent
-#  module, the terms and conditions of the license of that module.  An
-#  independent module is a module which is not derived from this
-#  software.  The special exception does not apply to any modifications
-#  of the software.
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License, version 2, as
+#  published by the Free Software Foundation (the "GPL").
+#  
+#  This program is distributed in the hope that it will be useful, but
+#  WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  General Public License version 2 (GPLv2) for more details.
+#  
+#  You should have received a copy of the GNU General Public License
+#  version 2 (GPLv2) along with this source code.
 #
 # -*- Makefile -*-
 # $Id: Makefile,v 1.18 Broadcom SDK $
@@ -34,33 +33,11 @@ LIBS = $(LIBDIR)/libkern.a
 
 BDE = linux-kernel-bde.o
 
-ifdef ROBO_CHIPS
-CFLAGS += -I$(ET_ROBO) -I${SDK}/include/shared/et
-ET_ROBO = ${SDK}/systems/drv/et
-endif
-
 # need to add vpath sources
-VPATH = ../shared $(ET_ROBO)
+VPATH = ../shared
 
 # Add the srcs to be found by vpath
 LSRCS += mpool.c
-ifdef ROBO_CHIPS
-platformsplt = $(subst -, , ${platform})    # change hyphens to spaces
-platformbase = $(word 1,${platformsplt})
-
-ifeq ($(platformbase), keystone)
-    LSRCS += etc_robo_spi.c aiutils.c
-else
-    ifeq ($(platformbase), keystone_le)
-        LSRCS += etc_robo_spi.c aiutils.c
-    else
-        ifeq ($(platformbase), iproc)
-             LSRCS += robo_srab.c robo_spi.c aiutils.c
-        endif
-    endif
-endif # platformbase
-
-endif # ROBO_CHIPS
 
 # Add shared BDE sources
 VPATH += ../../shared

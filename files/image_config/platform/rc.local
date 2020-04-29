@@ -106,32 +106,22 @@ value_extract() {
     done
 }
 
-# Set up previous and next reboot cause files
-process_reboot_cause() {
-    REBOOT_CAUSE_FILE="/var/cache/sonic/reboot-cause.txt"
-    PREVIOUS_REBOOT_CAUSE_FILE="/var/cache/sonic/previous-reboot-cause.txt"
-
-    # Set the previous reboot cause accordingly
-    # If this is the first boot after an image install, state that as the
-    # cause. Otherwise, move REBOOT_CAUSE_FILE to PREVIOUS_REBOOT_CAUSE_FILE.
-    # REBOOT_CAUSE_FILE should always exist, but we add the else case
-    # to ensure we always generate PREVIOUS_REBOOT_CAUSE_FILE here
-    if [ -f $FIRST_BOOT_FILE ]; then
-        echo "SONiC image installation" > $PREVIOUS_REBOOT_CAUSE_FILE
-    elif [ -f $REBOOT_CAUSE_FILE ]; then
-        mv -f $REBOOT_CAUSE_FILE $PREVIOUS_REBOOT_CAUSE_FILE
+program_console_speed()
+{
+    speed=$(cat /proc/cmdline | grep -Eo 'console=ttyS[0-9]+,[0-9]+' | cut -d "," -f2)
+    if [ -z "$speed" ]; then
+        CONSOLE_SPEED=9600
     else
-        echo "Unknown reboot cause" > $PREVIOUS_REBOOT_CAUSE_FILE
+        CONSOLE_SPEED=$speed
     fi
 
-    # Set the default cause for the next reboot
-    echo "Unexpected reboot" > $REBOOT_CAUSE_FILE
+    sed -i "s|\-\-keep\-baud .* %I| $CONSOLE_SPEED %I|g" /lib/systemd/system/serial-getty@.service
+    systemctl daemon-reload
 }
 
 #### Begin Main Body ####
 
-# Set up previous and next reboot cause files
-process_reboot_cause
+logger "SONiC version ${SONIC_VERSION} starting up..."
 
 # If the machine.conf is absent, it indicates that the unit booted
 # into SONiC from another NOS. Extract the machine.conf from ONIE.
@@ -209,6 +199,8 @@ fi
 
 . /host/machine.conf
 
+program_console_speed
+
 if [ -f $FIRST_BOOT_FILE ]; then
 
     echo "First boot detected. Performing first boot tasks..."
@@ -231,6 +223,8 @@ if [ -f $FIRST_BOOT_FILE ]; then
     elif [ -f /host/minigraph.xml ]; then
         mkdir -p /etc/sonic/old_config
         mv /host/minigraph.xml /etc/sonic/old_config/
+        [ -f /host/acl.json ] && mv /host/acl.json /etc/sonic/old_config/
+        [ -f /host/snmp.yml ] && mv /host/snmp.yml /etc/sonic/old_config/
         touch /tmp/pending_config_migration
     elif [ -n "$migration" ] && [ -f /host/migration/minigraph.xml ];  then
         mkdir -p /etc/sonic/old_config
@@ -243,9 +237,20 @@ if [ -f $FIRST_BOOT_FILE ]; then
         touch /tmp/pending_config_initialization
     fi
 
+    # Notify firstboot to Platform, to use it for reboot-cause
+    touch /tmp/notify_firstboot_to_platform
+
+    # Create /host/reboot-cause/platform/ directory
+    # can be used to track last reboot reason by some platforms
+    if [ ! -d /host/reboot-cause/platform ]; then
+        mkdir -p /host/reboot-cause/platform
+    fi
+
     if [ -d /host/image-$SONIC_VERSION/platform/$platform ]; then
         dpkg -i /host/image-$SONIC_VERSION/platform/$platform/*.deb
     fi
+
+    sync
 
     # If the unit booted into SONiC from another NOS's grub,
     # we now install a grub for SONiC.
@@ -328,6 +333,9 @@ if [ -f $FIRST_BOOT_FILE ]; then
         # Initialize the SONiC's grub config
         mv /host/grub.cfg /host/grub/grub.cfg
     fi
+
+    # Create dir where following scripts put their output files
+    mkdir -p /var/platform
 
     firsttime_exit
 fi

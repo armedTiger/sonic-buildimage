@@ -28,6 +28,7 @@
 #define SIO_DRVNAME             "SMF"
 #define DEBUG                   1
 #define LABELS                  1
+#define SMF_VERSION_ADDR        0x0000
 
 #define FANIN_MAX               12  /* Counted from 1 */
 #define VSEN_MAX                48  /* VSEN1.. */
@@ -42,7 +43,10 @@
 #define IOREGION_LENGTH           0x4
 #define SMF_ADDR_REG_OFFSET         0
 #define SMF_READ_DATA_REG_OFFSET    2
+#define SMF_WRITE_DATA_REG_OFFSET   3
 #define SMF_REG_ADDR            0x200
+#define SMF_POR_SRC_REG         0x209
+#define SMF_RST_SRC_REG         0x20A
 #define SMF_PROBE_ADDR          0x210
 
 #define SIO_REG_DEVID           0x1
@@ -67,7 +71,7 @@
 #define FAN_TRAY_AIRFLOW        0x0116
 
 
-/* FAN Z9100 */
+/* FAN */
 #define SMF_FAN_SPEED_ADDR      0x00F3
 #define FAN_TRAY_1_SPEED        0x00F3
 #define FAN_TRAY_1_FAN_2_SPEED  0x00F5
@@ -80,6 +84,11 @@
 #define FAN_TRAY_5_FAN_1_SPEED  0x0103
 #define FAN_TRAY_5_FAN_2_SPEED  0x0105
 #define FAN_TRAY_5                   4
+#define FAN_1_SERIAL_CODE       0x0117
+#define FAN_2_SERIAL_CODE       0x013A
+#define FAN_3_SERIAL_CODE       0x015D
+#define FAN_4_SERIAL_CODE       0x0180
+#define FAN_5_SERIAL_CODE       0x01A3
 #define FAN_601_FAULT           (2 + 1)
 #define IN28_INPUT              (27 + 1)
 #define IN404_INPUT             (43 + 1)
@@ -109,7 +118,7 @@
 #define PSU_1_OUTPUT_CURRENT    0x0244
 #define PSU_1_INPUT_POWER       0x0246
 #define PSU_1_OUTPUT_POWER      0x0248
-#define PSU_1_FAN_SPEED         0x023B
+#define PSU_1_COUNTRY_CODE      0x024A
 
 /* PSU2 */
 #define PSU_2_MAX_POWER         0x026D
@@ -124,6 +133,7 @@
 #define PSU_2_OUTPUT_CURRENT    0x027D
 #define PSU_2_INPUT_POWER       0x027F
 #define PSU_2_OUTPUT_POWER      0x0281
+#define PSU_2_COUNTRY_CODE      0x0283
 
 /* TEMP */
 #define TEMP_SENSOR_1           0x0014
@@ -147,6 +157,22 @@
 #define CPU_6_MONITOR_STATUS    0x02E7
 #define CPU_7_MONITOR_STATUS    0x02E8
 #define CPU_8_MONITOR_STATUS    0x02E9
+
+/* EEPROM PPID */
+/* FAN and PSU EEPROM PPID format is:
+   COUNTRY_CODE-PART_NO-MFG_ID-MFG_DATE_CODE-SERIAL_NO-LABEL_REV */
+#define EEPROM_COUNTRY_CODE_SIZE   2
+#define EEPROM_PART_NO_SIZE        6
+#define EEPROM_MFG_ID_SIZE         5
+#define EEPROM_MFG_DATE_SIZE       8
+#define EEPROM_DATE_CODE_SIZE      3
+#define EEPROM_SERIAL_NO_SIZE      4
+#define EEPROM_SERVICE_TAG_SIZE    7
+#define EEPROM_LABEL_REV_SIZE      3
+#define EEPROM_PPID_SIZE           28
+
+/* Mailbox PowerOn Reason */
+#define TRACK_POWERON_REASON    0x05FF
 
 
 unsigned long  *mmio;
@@ -438,6 +464,18 @@ struct smf_sio_data {
         enum kinds kind;
 };
 
+static int smf_write_reg(struct smf_data *data, u16 reg, u16 dev_data)
+{
+        int res = 0;
+
+        mutex_lock(&data->lock);
+        outb_p(reg>> 8, data->addr + SMF_ADDR_REG_OFFSET);
+        outb_p(reg & 0xff, data->addr + SMF_ADDR_REG_OFFSET + 1);
+        outb_p(dev_data & 0xff, data->addr + SMF_WRITE_DATA_REG_OFFSET);
+        mutex_unlock(&data->lock);
+
+        return res;
+}
 
 static int smf_read_reg(struct smf_data *data, u16 reg) 
 { 
@@ -471,6 +509,97 @@ static int smf_read_reg16(struct smf_data *data, u16 reg)
         return res;
 }
 
+/* SMF Version */
+static ssize_t show_smf_version(struct device *dev,
+                struct device_attribute *devattr, char *buf)
+{
+    int              index = to_sensor_dev_attr(devattr)->index;
+    unsigned int     ret = 0;
+    unsigned int     smf_version = 0;
+    unsigned int     smf_firmware_major_ver = 0;
+    unsigned int     smf_firmware_minor_ver = 0;
+    struct smf_data *data = dev_get_drvdata(dev);
+
+    ret = smf_read_reg(data, (SMF_VERSION_ADDR + index*2));
+
+    printk("smf_firmware_details-->0x%x index[%d]", ret, index);
+
+    if (index > 0) {
+        smf_firmware_major_ver = ((ret & (0xC0)) >> 6);
+        smf_firmware_minor_ver = (ret & (0x3F));
+
+        ret = sprintf(buf, "%u.%u\n", smf_firmware_major_ver,
+                                      smf_firmware_minor_ver);
+    } else {
+        smf_version = ret;
+        ret = sprintf(buf, "%u\n", smf_version);
+    }
+
+    return ret;
+}
+
+
+/* SMF Reset Reason */
+static ssize_t show_reset_reason(struct device *dev,
+                struct device_attribute *devattr, char *buf)
+{
+    unsigned int ret = 0;
+
+    ret = inb(SMF_RST_SRC_REG);
+
+    if(ret < 0)
+       return ret;
+
+    return sprintf(buf, "%x\n", ret);
+}
+
+/* SMF Power ON Reason */
+static ssize_t show_power_on_reason(struct device *dev,
+                struct device_attribute *devattr, char *buf)
+{
+    unsigned int ret = 0;
+
+    ret = inb(SMF_POR_SRC_REG);
+
+    if(ret < 0)
+       return ret;
+
+    return sprintf(buf, "%x\n", ret);
+}
+
+/* SMF Mailbox Power ON Reason */
+static ssize_t set_mb_poweron_reason(struct device *dev,
+              struct device_attribute *devattr, const char *buf, size_t count)
+{
+    int              err = 0;
+    unsigned int     dev_data = 0;
+    struct smf_data *data = dev_get_drvdata(dev);
+
+    err = kstrtouint(buf, 16, &dev_data);
+    if (err)
+        return err;
+
+    err = smf_write_reg(data, TRACK_POWERON_REASON, dev_data);
+
+    if(err < 0)
+       return err;
+
+    return count;
+}
+
+static ssize_t show_mb_poweron_reason(struct device *dev,
+                struct device_attribute *devattr, char *buf)
+{
+    unsigned int     ret = 0;
+    struct smf_data *data = dev_get_drvdata(dev);
+
+    ret = smf_read_reg(data, TRACK_POWERON_REASON);
+
+    if(ret < 0)
+       return ret;
+
+    return sprintf(buf, "0x%x\n", ret);
+}
 
 /* FANIN ATTR */
 static ssize_t
@@ -502,7 +631,7 @@ static ssize_t show_fan(struct device *dev,
                         ret = smf_read_reg16(data, PSU_2_FAN_SPEED);
                         break;
                 case 12:
-                        ret = ~smf_read_reg(data, FAN_TRAY_PRESENCE);
+                        ret = (~smf_read_reg(data, FAN_TRAY_PRESENCE) & 0xff);
                         export_hex = 1;
                         break; 
 		       
@@ -513,6 +642,9 @@ static ssize_t show_fan(struct device *dev,
 
         if (ret < 0)
                 return ret;
+
+        if (ret & 0x8000)
+                ret = - (ret & 0x7fff);
 
         rpm = ret;
 
@@ -550,14 +682,26 @@ static ssize_t show_fan_alarm(struct device *dev,
         struct smf_data *data = dev_get_drvdata(dev);
         int ret, psu_fan_status=0;
 
-        if(index < 2)
-                psu_fan_status = smf_read_reg(data, FAN_STATUS_GROUP_B);
+        if (data->kind == z9100smf) {
+                if ((index % 2) == 0)
+                        index = index / 2;
+                else
+                        index = (index / 2) + 5;
+        }
+
+        if (data->kind == s6100smf)
+                index = index / 2;
+
+        if (index > 7) {
+                psu_fan_status = ~smf_read_reg(data, FAN_STATUS_GROUP_A);
+                index = index % 8;
+        } else
+                psu_fan_status = ~smf_read_reg(data, FAN_STATUS_GROUP_B);
 
         if (psu_fan_status & (1 << (index)))
                 ret=0;
-
-        if (ret < 0)
-                return ret;
+        else
+                ret=1;
 
         return sprintf(buf, "%d\n", ret);  
 }
@@ -594,12 +738,12 @@ static ssize_t show_psu_fan(struct device *dev,
 
         if (index < FAN_601_FAULT){                               
                 fan_status = smf_read_reg(data, PSU_1_FAN_STATUS);
-                ret = fan_status & (1 << index);
+                ret = (fan_status >> index) & 1;
 
         }
         else{ 
                 fan_status = smf_read_reg(data, PSU_2_FAN_STATUS);
-                ret = fan_status & (1 << (index - 3));
+                ret = (fan_status >> (index - 3)) & 1;
         }
 
         if (ret < 0)
@@ -1187,17 +1331,15 @@ static ssize_t show_current(struct device *dev,
                 else
                         ret = smf_read_reg16(data, SWITCH_CURRENT_Z9100 + index * 2);
         else if (index < CURR602_INPUT)
-                curr = smf_read_reg16(data, PSU_1_INPUT_CURRENT + (index % 4) * 2);
+                ret = smf_read_reg16(data, PSU_1_INPUT_CURRENT + (index % 2) * 2);
         else
-                curr = smf_read_reg16(data, PSU_2_INPUT_CURRENT + (index % 4) * 2);
+                ret = smf_read_reg16(data, PSU_2_INPUT_CURRENT + (index % 4) * 2);
 
 
         if (ret < 0)
                 return ret;
 
-        /* TODO: docs say 10mA, value look like A? */
-        if(index < 2)
-                curr = ret*1000;
+        curr = ret*10;
 
         return sprintf(buf, "%d\n", curr);
 }
@@ -1327,23 +1469,28 @@ static ssize_t show_temp_crit(struct device *dev,
 }
 
 
-/*static ssize_t show_temp_alarm(struct device *dev,
+static ssize_t show_temp_alarm(struct device *dev,
                 struct device_attribute *devattr, char *buf)
 {
         int index = to_sensor_dev_attr(devattr)->index;
         struct smf_data *data = dev_get_drvdata(dev);
-        int ret;
-        int temp;
+        int ret = 0;
+        int temp = 0;
 
-        ret = smf_read_reg16(data, TEMP_SENSOR_1_STATUS + index * 2);
+        ret = smf_read_reg(data, TEMP_SENSOR_1_STATUS + index);
 
-        if (ret < 0)
-                return ret;
+        if (ret < 0) {
+            return ret;
+        }
+
+        if (ret == 0xff) {
+            ret = 0;
+        }
 
         temp = ret;
 
         return sprintf(buf, "%d\n", temp);
-}*/
+}
 
 
 static umode_t smf_tcpu_is_visible(struct kobject *kobj,
@@ -1432,6 +1579,25 @@ static SENSOR_DEVICE_ATTR(temp13_max,       S_IRUGO, show_temp_crit, NULL, 50);
 static SENSOR_DEVICE_ATTR(temp14_max,       S_IRUGO, show_temp_crit, NULL, 46);
 static SENSOR_DEVICE_ATTR(temp15_max,       S_IRUGO, show_temp_crit, NULL, 50);
 
+static SENSOR_DEVICE_ATTR(temp1_alarm,      S_IRUGO, show_temp_alarm, NULL, 0);
+static SENSOR_DEVICE_ATTR(temp2_alarm,      S_IRUGO, show_temp_alarm, NULL, 1);
+static SENSOR_DEVICE_ATTR(temp3_alarm,      S_IRUGO, show_temp_alarm, NULL, 2);
+static SENSOR_DEVICE_ATTR(temp4_alarm,      S_IRUGO, show_temp_alarm, NULL, 3);
+static SENSOR_DEVICE_ATTR(temp5_alarm,      S_IRUGO, show_temp_alarm, NULL, 4);
+static SENSOR_DEVICE_ATTR(temp6_alarm,      S_IRUGO, show_temp_alarm, NULL, 5);
+static SENSOR_DEVICE_ATTR(temp7_alarm,      S_IRUGO, show_temp_alarm, NULL, 6);
+static SENSOR_DEVICE_ATTR(temp8_alarm,      S_IRUGO, show_temp_alarm, NULL, 7);
+static SENSOR_DEVICE_ATTR(temp9_alarm,      S_IRUGO, show_temp_alarm, NULL, 8);
+static SENSOR_DEVICE_ATTR(temp10_alarm,     S_IRUGO, show_temp_alarm, NULL, 9);
+static SENSOR_DEVICE_ATTR(temp11_alarm,     S_IRUGO, show_temp_alarm, NULL, 10);
+static SENSOR_DEVICE_ATTR(temp12_alarm,     S_IRUGO, show_temp_alarm, NULL, 11);
+static SENSOR_DEVICE_ATTR(temp13_alarm,     S_IRUGO, show_temp_alarm, NULL, 12);
+
+static SENSOR_DEVICE_ATTR(temp14_alarm,     S_IRUGO, show_temp_alarm, NULL, 13);
+static SENSOR_DEVICE_ATTR(temp15_alarm,     S_IRUGO, show_temp_alarm, NULL, 14);
+
+
+
 
 static struct attribute *smf_tcpu_attrs[] = {
         &sensor_dev_attr_temp1_input.dev_attr.attr,
@@ -1498,6 +1664,23 @@ static struct attribute *smf_tcpu_attrs[] = {
         &sensor_dev_attr_temp14_max.dev_attr.attr,
         &sensor_dev_attr_temp15_max.dev_attr.attr,
 
+        &sensor_dev_attr_temp1_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp2_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp3_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp4_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp5_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp6_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp7_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp8_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp9_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp10_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp11_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp12_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp13_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp14_alarm.dev_attr.attr,
+        &sensor_dev_attr_temp15_alarm.dev_attr.attr,
+
+
         NULL
 };  
 
@@ -1525,26 +1708,36 @@ static ssize_t show_psu(struct device *dev,
         struct smf_data *data = dev_get_drvdata(dev);
         int ret=0, export_hex=0;
         int psu_status=0, pow;
+        int pow_val = 0;
 
         switch (index) {
 
                 case 0:
                         pow = smf_read_reg16(data, PSU_1_MAX_POWER);
-			/* TODO Fix */
-			if (data->kind == s6100smf)			
-				ret = 1000000 * 1100;
-			else
-				ret = 1000000 * 750;
+                        if (data->kind == s6100smf)
+                            ret = 1000000 * 1100;
+                        else
+                            ret = 1000000 * 750;
                         break;
                 case 1:
                         ret = smf_read_reg(data, PSU_1_STATUS);
                         export_hex=1;
                         break;
                 case 2:
-                        ret = 100000 * smf_read_reg16(data, PSU_1_INPUT_POWER);
+                        pow_val = smf_read_reg16(data, PSU_1_INPUT_POWER);
+                        /* In case of absent psu, pow_val will be 0xffff */
+                        if (pow_val == 0xffff) {
+                            pow_val = 0;
+                        }
+                        ret = 100000 * pow_val;
                         break;
                 case 3:
-                        ret = 100000 * smf_read_reg16(data, PSU_1_OUTPUT_POWER);
+                        pow_val = smf_read_reg16(data, PSU_1_OUTPUT_POWER);
+                        /* In case of absent psu, pow_val will be 0xffff */
+                        if (pow_val == 0xffff) {
+                            pow_val = 0;
+                        }
+                        ret = 100000 * pow_val;
                         break;
                 case 4:
                         psu_status = smf_read_reg(data, PSU_1_STATUS);
@@ -1554,21 +1747,30 @@ static ssize_t show_psu(struct device *dev,
                 case 5:
                         pow = smf_read_reg16(data, PSU_2_MAX_POWER);
                         ret = 1000000 * pow;
-			/* TODO Fix */
-			if (data->kind == s6100smf)			
-				ret = 1000000 * 1100;
-			else
-				ret = 1000000 * 750;
+                        if (data->kind == s6100smf)
+                            ret = 1000000 * 1100;
+                        else
+                            ret = 1000000 * 750;
                         break;
                 case 6:
                         ret = smf_read_reg(data, PSU_2_STATUS);
                         export_hex=1;
                         break;
                 case 7:
-                        ret = 100000 * smf_read_reg16(data, PSU_2_INPUT_POWER);
+                        pow_val = smf_read_reg16(data, PSU_2_INPUT_POWER);
+                        /* In case of absent psu, pow_val will be 0xffff */
+                        if (pow_val == 0xffff) {
+                            pow_val = 0;
+                        }
+                        ret = 100000 * pow_val;
                         break;
                 case 8:
-                        ret = 100000 * smf_read_reg16(data, PSU_2_OUTPUT_POWER);
+                        pow_val = smf_read_reg16(data, PSU_2_OUTPUT_POWER);
+                        /* In case of absent psu, pow_val will be 0xffff */
+                        if (pow_val == 0xffff) {
+                            pow_val = 0;
+                        }
+                        ret = 100000 * pow_val;
                         break;
                 case 9:
                         psu_status = smf_read_reg(data, PSU_2_STATUS);
@@ -1577,6 +1779,10 @@ static ssize_t show_psu(struct device *dev,
                         break;
                 case 10:
                         pow = smf_read_reg16(data, CURRENT_TOTAL_POWER);
+                        /* In case of both psu absent, pow will be 0xffff */
+                        if (pow == 0xffff) {
+                            pow = 0;
+                        }
                         ret = pow/10;
                         break;
                 default:
@@ -1594,6 +1800,144 @@ static ssize_t show_psu(struct device *dev,
                 return sprintf(buf, "%u\n", pow);
 }
 
+/* FAN and PSU EEPROM PPID format is:
+   COUNTRY_CODE-PART_NO-MFG_ID-MFG_DATE_CODE-SERIAL_NO-LABEL_REV */
+static ssize_t show_ppid(struct device *dev,
+                struct device_attribute *devattr, char *buf)
+{
+	int index = to_sensor_dev_attr(devattr)->index;
+	struct smf_data *data = dev_get_drvdata(dev);
+	char ppid[EEPROM_PPID_SIZE + 1] = {0};
+	char psu_mfg_date[EEPROM_MFG_DATE_SIZE + 1] = {0};
+	char psu_mfg_date_code[EEPROM_DATE_CODE_SIZE + 1] = {0};
+	char temp;
+	int i, reg, ret = 0, ppid_pos = 0;
+
+	switch(index) {
+
+        /* PPID starts from Country Code*/
+        case 0:
+            reg = FAN_1_SERIAL_CODE;
+            break;
+        case 1:
+            reg = FAN_2_SERIAL_CODE;
+            break;
+        case 2:
+            reg = FAN_3_SERIAL_CODE;
+            break;
+        case 3:
+            reg = FAN_4_SERIAL_CODE;
+            break;
+        case 4:
+            reg = FAN_5_SERIAL_CODE;
+            break;
+        case 10:
+            reg = PSU_1_COUNTRY_CODE;
+            break;
+        case 11:
+            reg = PSU_2_COUNTRY_CODE;
+            break;
+        default:
+            return ret;
+}
+
+	// Get Country Code
+	for( i = 0; i < EEPROM_COUNTRY_CODE_SIZE; i++) {
+		ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+	}
+	ppid[ppid_pos++] = '-';
+
+	// Get Part Number
+	for( i = 0; i < EEPROM_PART_NO_SIZE; i++) {
+		ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+	}
+	ppid[ppid_pos++] = '-';
+
+	// Get Manufacture ID
+	for( i = 0; i < EEPROM_MFG_ID_SIZE; i++) {
+		ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+	}
+	ppid[ppid_pos++] = '-';
+	if(index > 9){   //Applicable only for PSU 
+		// Get Manufacture date
+		for( i = 0; i < EEPROM_MFG_DATE_SIZE; i++) {
+			psu_mfg_date[i] = (char)smf_read_reg(data,reg++);
+		}
+
+		/* Converting 6 digit date code [yymmdd] to 3 digit[ymd]  
+        	   Year  Starting from 2010 [0-9] , Day :  1-9 and A-V , Month : 1-9 and A-C */
+		// Year Validation and Conversion
+		if( ( psu_mfg_date[0] == '1' ) && ( psu_mfg_date[1] >= '0' ) && ( psu_mfg_date[1] <= '9') ) 
+		{
+			psu_mfg_date_code[0] = psu_mfg_date[1];      
+		}
+		else
+		{
+			psu_mfg_date_code[0] = ' ';
+		}
+	
+		// Month Validation and Conversion 
+		temp = ( ( psu_mfg_date[2] - 0x30 ) * 10 ) + ( psu_mfg_date[3] - 0x30 );
+		if( ( temp >= 1) && ( temp < 10) ) 
+		{
+			psu_mfg_date_code[1] = temp + 0x30; // 0- 9
+		}
+		else if ( ( temp >= 10) && ( temp <= 12) )
+		{
+			psu_mfg_date_code[1] = temp + 0x37; // A-C 
+		}
+		else
+		{
+			psu_mfg_date_code[1]= ' ';
+		}
+
+		// Date	Validation and Conversion
+		temp = ( ( psu_mfg_date[4] - 0x30 ) * 10 ) + ( psu_mfg_date[5] - 0x30 );
+		if( ( temp >= 1) && ( temp < 10) )
+		{   
+			psu_mfg_date_code[2] = temp + 0x30; // 0- 9	
+		}
+		else if( ( temp >= 10) && ( temp <= 31) )
+		{
+			psu_mfg_date_code[2] = temp + 0x37; // A-V 
+		}
+		else
+		{
+			psu_mfg_date_code[2] = ' ';
+		}
+		for( i = 0; i < EEPROM_DATE_CODE_SIZE; i++) {
+			ppid[ppid_pos++] = psu_mfg_date_code[i];
+		}
+	}else{
+		for( i = 0; i < EEPROM_DATE_CODE_SIZE; i++) {
+			ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+		}
+	}
+
+	ppid[ppid_pos++] = '-';
+
+	// Get Serial Number
+	for( i = 0; i < EEPROM_SERIAL_NO_SIZE; i++) {
+		ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+	}
+	ppid[ppid_pos++] = '-';
+
+	if(index > 9){
+	// Skipping PSU service tag in PPID 
+		reg += EEPROM_SERVICE_TAG_SIZE;
+    }
+	else{
+	// Skipping FAN partno tag in PPID 
+		reg += EEPROM_PART_NO_SIZE;
+    }
+
+	// Get Label Revision
+	for( i = 0; i < EEPROM_LABEL_REV_SIZE; i++) {
+		ppid[ppid_pos++] = (char)smf_read_reg(data,reg++);
+	}
+
+	return sprintf(buf, "%s\n",ppid);
+}
 
 static umode_t smf_psu_is_visible(struct kobject *kobj,
                 struct attribute *a, int n)
@@ -1670,15 +2014,42 @@ static SENSOR_DEVICE_ATTR(fan7_airflow, S_IRUGO, show_fan_airflow, NULL, 3);
 static SENSOR_DEVICE_ATTR(fan9_airflow, S_IRUGO, show_fan_airflow, NULL, 4);
 static SENSOR_DEVICE_ATTR(fan11_airflow, S_IRUGO, show_psu_fan, NULL, 0);
 static SENSOR_DEVICE_ATTR(fan12_airflow, S_IRUGO, show_psu_fan, NULL, 3);
+static SENSOR_DEVICE_ATTR(fan1_serialno, S_IRUGO, show_ppid, NULL, 0);
+static SENSOR_DEVICE_ATTR(fan3_serialno, S_IRUGO, show_ppid, NULL, 1);
+static SENSOR_DEVICE_ATTR(fan5_serialno, S_IRUGO, show_ppid, NULL, 2);
+static SENSOR_DEVICE_ATTR(fan7_serialno, S_IRUGO, show_ppid, NULL, 3);
+static SENSOR_DEVICE_ATTR(fan9_serialno, S_IRUGO, show_ppid, NULL, 4);
 /* IOM status */
 static SENSOR_DEVICE_ATTR(iom_status, S_IRUGO, show_voltage, NULL, 44);
 static SENSOR_DEVICE_ATTR(iom_presence, S_IRUGO, show_voltage, NULL, 45);
 
 static SENSOR_DEVICE_ATTR(psu1_presence, S_IRUGO, show_psu, NULL, 1);
 static SENSOR_DEVICE_ATTR(psu2_presence, S_IRUGO, show_psu, NULL, 6);
+static SENSOR_DEVICE_ATTR(psu1_serialno, S_IRUGO, show_ppid, NULL, 10);
+static SENSOR_DEVICE_ATTR(psu2_serialno, S_IRUGO, show_ppid, NULL, 11);
 static SENSOR_DEVICE_ATTR(current_total_power, S_IRUGO, show_psu, NULL, 10);
 
+/* SMF Version */
+static SENSOR_DEVICE_ATTR(smf_version, S_IRUGO, show_smf_version, NULL, 0);
+static SENSOR_DEVICE_ATTR(smf_firmware_ver, S_IRUGO, show_smf_version, NULL, 1);
+
+/* SMF Reset Reason */
+static SENSOR_DEVICE_ATTR(smf_reset_reason, S_IRUGO, show_reset_reason, NULL, 1);
+
+/* SMF PowerOn Reason */
+static SENSOR_DEVICE_ATTR(smf_poweron_reason, S_IRUGO,
+                                            show_power_on_reason, NULL, 1);
+
+/* Mailbox Power tracking Reason */
+static SENSOR_DEVICE_ATTR(mb_poweron_reason, S_IRUGO|S_IWUSR,
+                            show_mb_poweron_reason, set_mb_poweron_reason, 0);
+
 static struct attribute *smf_dell_attrs[] = {
+        &sensor_dev_attr_smf_version.dev_attr.attr,
+        &sensor_dev_attr_smf_firmware_ver.dev_attr.attr,
+        &sensor_dev_attr_smf_reset_reason.dev_attr.attr,
+        &sensor_dev_attr_smf_poweron_reason.dev_attr.attr,
+        &sensor_dev_attr_mb_poweron_reason.dev_attr.attr,
         &sensor_dev_attr_fan_tray_presence.dev_attr.attr,
         &sensor_dev_attr_fan1_airflow.dev_attr.attr,
         &sensor_dev_attr_fan3_airflow.dev_attr.attr,
@@ -1691,8 +2062,15 @@ static struct attribute *smf_dell_attrs[] = {
         &sensor_dev_attr_iom_presence.dev_attr.attr,
         &sensor_dev_attr_psu1_presence.dev_attr.attr,
         &sensor_dev_attr_psu2_presence.dev_attr.attr,
+        &sensor_dev_attr_psu1_serialno.dev_attr.attr,
+        &sensor_dev_attr_psu2_serialno.dev_attr.attr,
+        &sensor_dev_attr_fan1_serialno.dev_attr.attr,
+        &sensor_dev_attr_fan3_serialno.dev_attr.attr,
+        &sensor_dev_attr_fan5_serialno.dev_attr.attr,
+        &sensor_dev_attr_fan7_serialno.dev_attr.attr,
+        &sensor_dev_attr_fan9_serialno.dev_attr.attr,
         &sensor_dev_attr_current_total_power.dev_attr.attr,
-	NULL
+        NULL
 };
 
 static const struct attribute_group smf_dell_group = {
@@ -1707,7 +2085,7 @@ static const struct attribute_group *smf_groups[] = {
         &smf_vsen_group,
         &smf_curr_group,
         &smf_tcpu_group,
-	&smf_dell_group,
+        &smf_dell_group,
         NULL
 };
 

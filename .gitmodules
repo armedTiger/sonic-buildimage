@@ -46,19 +46,39 @@
 	url = https://github.com/Azure/sonic-platform-daemons
 [submodule "src/sonic-frr/frr"]
 	path = src/sonic-frr/frr
-	url = https://github.com/FRRouting/frr.git
+	url = https://github.com/Azure/sonic-frr.git
+	branch = frr/7.2
 [submodule "platform/p4/p4-hlir/p4-hlir-v1.1"]
 	path = platform/p4/p4-hlir/p4-hlir-v1.1
 	url = https://github.com/p4lang/p4-hlir.git
 [submodule "platform/p4/SAI-P4-BM"]
 	path = platform/p4/SAI-P4-BM
 	url = https://github.com/Mellanox/SAI-P4-BM.git
-[submodule "platform/nephos/sonic-platform-modules-ingrasys"]
-	path = platform/nephos/sonic-platform-modules-ingrasys
-	url = https://github.com/Ingrasys-sonic/sonic-platform-modules-ingrasys-nephos.git
 [submodule "platform/barefoot/sonic-platform-modules-arista"]
 	path = platform/barefoot/sonic-platform-modules-arista
 	url = https://github.com/aristanetworks/sonic
 [submodule "platform/mellanox/hw-management/hw-mgmt"]
 	path = platform/mellanox/hw-management/hw-mgmt
 	url = https://github.com/Mellanox/hw-mgmt/
+[submodule "src/redis-dump-load"]
+	path = src/redis-dump-load
+	url = https://github.com/p/redis-dump-load.git
+[submodule "platform/mellanox/mlnx-sai/SAI-Implementation"]
+	path = platform/mellanox/mlnx-sai/SAI-Implementation
+	url = https://github.com/Mellanox/SAI-Implementation
+[submodule "src/sonic-mgmt-framework"]
+	path = src/sonic-mgmt-framework
+	url = https://github.com/Azure/sonic-mgmt-framework
+[submodule "src/sonic-telemetry"]
+	path = src/sonic-telemetry
+	url = https://github.com/Azure/sonic-telemetry
+[submodule "Switch-SDK-drivers"]
+	path = platform/mellanox/sdk-src/sx-kernel/Switch-SDK-drivers
+	url = https://github.com/Mellanox/Switch-SDK-drivers
+[submodule "src/sonic-ztp"]
+	path = src/sonic-ztp
+	url = https://github.com/Azure/sonic-ztp
+[submodule "src/sonic-restapi"]
+	path = src/sonic-restapi
+	url = https://github.com/Azure/sonic-restapi.git
+	branch = master

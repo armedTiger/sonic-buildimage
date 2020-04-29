@@ -15,8 +15,10 @@ case "$1" in
 start)
         echo -n "Setting up board... "
 
-	modprobe smc
-        
+        modprobe smc
+        modprobe hlx_gpio_ich
+        modprobe dps200
+
         found=0
         for devnum in 0 1; do
                 devname=`cat /sys/bus/i2c/devices/i2c-${devnum}/name`
@@ -47,9 +49,12 @@ start)
         # Attach syseeprom
         echo 24lc64t 0x50 > /sys/bus/i2c/devices/i2c-2/new_device
 
-        echo max6697 0x1a > /sys/bus/i2c/devices/i2c-3/new_device
-        echo max6697 0x1a > /sys/bus/i2c/devices/i2c-11/new_device
+        echo max6699 0x1a > /sys/bus/i2c/devices/i2c-3/new_device
+        echo max6699 0x1a > /sys/bus/i2c/devices/i2c-11/new_device
 
+        # Attach PSUs
+        echo dps200 0x5a > /sys/bus/i2c/devices/i2c-12/new_device
+        echo dps200 0x5b > /sys/bus/i2c/devices/i2c-13/new_device
 
         # Attach fans
         echo emc2305 0x4d > /sys/bus/i2c/devices/i2c-23/new_device
@@ -63,6 +68,8 @@ start)
         # Enable SFP module presence interrupt
         echo "both" > /sys/devices/platform/e1031.smc/SFP/modabs_trig
         echo 0 > /sys/devices/platform/e1031.smc/SFP/modabs_mask
+
+        /bin/sh /usr/local/bin/platform_api_mgnt.sh init
 
         echo "done."
         ;;

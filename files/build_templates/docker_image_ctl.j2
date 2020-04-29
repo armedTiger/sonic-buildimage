@@ -1,26 +1,117 @@
 #!/bin/bash
 
+# single instance containers are still supported (even though it might not look like it)
+# if no instance number is passed to this script, $DEV will simply be unset, resulting in docker
+# commands being sent to the base container name. E.g. `docker start database$DEV` simply starts
+# the container `database` if no instance number is passed since `$DEV` is not defined
+
+
+{%- if docker_container_name == "database" %}
+link_namespace() {
+    # Makes namespace of a docker container available in
+    # /var/run/netns so it can be managed with iproute2
+
+    mkdir -p /var/run/netns
+    PID="$(docker inspect -f {{"'{{.State.Pid}}'"}} "{{docker_container_name}}$DEV")"
+
+    PIDS=`ip netns pids "$NET_NS" 2>/dev/null`
+    if [ "$?" -eq "0" ]; then # namespace exists
+        if `echo $PIDS | grep --quiet -w $PID`; then # namespace is correctly linked
+            return 0
+        else # if it's incorrectly linked remove it
+            ip netns delete $NET_NS
+        fi
+    fi
+
+    ln -s /proc/$PID/ns/net /var/run/netns/$NET_NS
+}
+{%- endif %}
+
 function getMountPoint()
 {
-    echo $1 |  python -c "import sys, json, os; mnts = [x for x in json.load(sys.stdin)[0]['Mounts'] if x['Destination'] == '/usr/share/sonic/hwsku']; print '' if len(mnts) == 0 else os.path.basename(mnts[0]['Source'])" 2>/dev/null
+    echo $1 | python -c "import sys, json, os; mnts = [x for x in json.load(sys.stdin)[0]['Mounts'] if x['Destination'] == '/usr/share/sonic/hwsku']; print '' if len(mnts) == 0 else os.path.basename(mnts[0]['Source'])" 2>/dev/null
+}
+
+function getBootType()
+{
+    # same code snippet in files/scripts/syncd.sh
+    case "$(cat /proc/cmdline)" in
+    *SONIC_BOOT_TYPE=warm*)
+        TYPE='warm'
+        ;;
+    *SONIC_BOOT_TYPE=fastfast*)
+        TYPE='fastfast'
+        ;;
+    *SONIC_BOOT_TYPE=fast*|*fast-reboot*)
+        TYPE='fast'
+        ;;
+    *)
+        TYPE='cold'
+    esac
+    echo "${TYPE}"
+}
+
+function preStartAction()
+{
+{%- if docker_container_name == "database" %}
+    WARM_DIR=/host/warmboot
+    if [[ ("$BOOT_TYPE" == "warm" || "$BOOT_TYPE" == "fastfast")  && -f $WARM_DIR/dump.rdb ]]; then
+        # Load redis content from /host/warmboot/dump.rdb
+        docker cp $WARM_DIR/dump.rdb database$DEV:/var/lib/redis/dump.rdb
+    else
+        # Create an emtpy file and overwrite any RDB if already there
+        echo -n > /tmp/dump.rdb
+        docker cp /tmp/dump.rdb database$DEV:/var/lib/redis/
+    fi
+{%- elif docker_container_name == "snmp" %}
+    sonic-netns-exec "$NET_NS" sonic-db-cli STATE_DB HSET 'DEVICE_METADATA|localhost' chassis_serial_number $(decode-syseeprom -s)
+{%- else %}
+    : # nothing
+{%- endif %}
 }
 
 function postStartAction()
 {
 {%- if docker_container_name == "database" %}
-    until [[ $(/usr/bin/docker exec database redis-cli ping | grep -c PONG) -gt 0 ]]; do
-      sleep 1;
-    done
+    if [ "$DEV" ]; then
+        docker exec -i database$DEV sysctl -w net.ipv6.conf.all.disable_ipv6=0
+        link_namespace $DEV
+    fi
+    # Wait until redis starts
+    /usr/bin/docker exec database$DEV ping_pong_db_insts
+    if [[ ("$BOOT_TYPE" == "warm" || "$BOOT_TYPE" == "fastfast") && -f $WARM_DIR/dump.rdb ]]; then
+        rm -f $WARM_DIR/dump.rdb
+    else
+        # If there is a config_db.json dump file, load it.
+        if [ -r /etc/sonic/config_db$DEV.json ]; then
+            if [ -r /etc/sonic/init_cfg.json ]; then
+                sonic-netns-exec "$NET_NS" sonic-cfggen -j /etc/sonic/init_cfg.json -j /etc/sonic/config_db$DEV.json --write-to-db
+            else
+                sonic-netns-exec "$NET_NS" sonic-cfggen -j /etc/sonic/config_db$DEV.json --write-to-db
+            fi
+        fi
+
+        if [[ "$BOOT_TYPE" == "fast" ]]; then
+            # set the key to expire in 3 minutes
+            /usr/bin/sonic-netns-exec "$NET_NS" sonic-db-cli STATE_DB SET "FAST_REBOOT|system" "1" "EX" "180"
+        fi
+
+        /usr/bin/sonic-netns-exec "$NET_NS" sonic-db-cli CONFIG_DB SET "CONFIG_DB_INITIALIZED" "1"
+    fi
+
+    if [[ -x /usr/bin/db_migrator.py ]]; then
+        # Migrate the DB to the latest schema version if needed
+        /usr/bin/db_migrator.py -o migrate
+    fi
 {%- elif docker_container_name == "swss" %}
-    docker exec swss rm -f /ready   # remove cruft
-    if [[ -d /host/fast-reboot ]];
-    then
-        test -e /host/fast-reboot/fdb.json && docker cp /host/fast-reboot/fdb.json swss:/
-        test -e /host/fast-reboot/arp.json && docker cp /host/fast-reboot/arp.json swss:/
-        test -e /host/fast-reboot/default_routes.json && docker cp /host/fast-reboot/default_routes.json swss:/
+    docker exec swss$DEV rm -f /ready   # remove cruft
+    if [[ "$BOOT_TYPE" == "fast" ]] && [[ -d /host/fast-reboot ]]; then
+        test -e /host/fast-reboot/fdb.json && docker cp /host/fast-reboot/fdb.json swss$DEV:/
+        test -e /host/fast-reboot/arp.json && docker cp /host/fast-reboot/arp.json swss$DEV:/
+        test -e /host/fast-reboot/default_routes.json && docker cp /host/fast-reboot/default_routes.json swss$DEV:/
         rm -fr /host/fast-reboot
     fi
-    docker exec swss touch /ready   # signal swssconfig.sh to go
+    docker exec swss$DEV touch /ready # signal swssconfig.sh to go
 {%- elif docker_container_name == "pmon" %}
 
     DEVPATH="/usr/share/sonic/device"
@@ -32,85 +123,156 @@ function postStartAction()
             docker cp $PSENSOR pmon:/usr/bin/
         fi
     fi
-{%- elif docker_container_name == "snmp" %}
-    docker exec -i database redis-cli -n 6 HSET 'DEVICE_METADATA|localhost' chassis_serial_number $(decode-syseeprom -s)
 {%- else %}
     : # nothing
 {%- endif %}
 }
 
-# Obtain our platform as we will mount directories with these names in each docker
-PLATFORM=`sonic-cfggen -H -v DEVICE_METADATA.localhost.platform`
-
-{%- if docker_container_name == "database" %}
-# Don't mount HWSKU in {{docker_container_name}} container.
-HWSKU=""
-{%- else %}
-# Obtain our HWSKU as we will mount directories with these names in each docker
-HWSKU=`sonic-cfggen -d -v 'DEVICE_METADATA["localhost"]["hwsku"]'`
-{%- endif %}
-
 start() {
-    DOCKERCHECK=`docker inspect --type container {{docker_container_name}} 2>/dev/null`
+    # Obtain boot type from kernel arguments
+    BOOT_TYPE=`getBootType`
+
+    # Obtain our platform as we will mount directories with these names in each docker
+    PLATFORM=`sonic-netns-exec "$NET_NS" sonic-cfggen -H -v DEVICE_METADATA.localhost.platform`
+
+    {%- if docker_container_name == "database" %}
+    # Don't mount HWSKU in {{docker_container_name}} container.
+    HWSKU=""
+    {%- else %}
+    # Obtain our HWSKU as we will mount directories with these names in each docker
+    HWSKU=`sonic-netns-exec "$NET_NS" sonic-cfggen -d -v 'DEVICE_METADATA["localhost"]["hwsku"]'`
+    {%- endif %}
+
+    DOCKERCHECK=`docker inspect --type container {{docker_container_name}}$DEV 2>/dev/null`
     if [ "$?" -eq "0" ]; then
+        {%- if docker_container_name == "database" %}
+        DOCKERMOUNT=""
+        {%- else %}
         DOCKERMOUNT=`getMountPoint "$DOCKERCHECK"`
-        if [ "$DOCKERMOUNT" == "$HWSKU" ]; then
-            echo "Starting existing {{docker_container_name}} container with HWSKU $HWSKU"
-            docker start {{docker_container_name}}
+        {%- endif %}
+        if [ x"$DOCKERMOUNT" == x"$HWSKU" ]; then
+            {%- if docker_container_name == "database" %}
+            echo "Starting existing {{docker_container_name}}$DEV container"
+            {%- else %}
+            echo "Starting existing {{docker_container_name}}$DEV container with HWSKU $HWSKU"
+            {%- endif %}
+            preStartAction
+            docker start {{docker_container_name}}$DEV
             postStartAction
-            exit 0
+            exit $?
         fi
 
         # docker created with a different HWSKU, remove and recreate
-        echo "Removing obsolete {{docker_container_name}} container with HWSKU $DOCKERMOUNT"
-        docker rm -f {{docker_container_name}}
+        echo "Removing obsolete {{docker_container_name}}$DEV container with HWSKU $DOCKERMOUNT"
+        docker rm -f {{docker_container_name}}$DEV
     fi
 
-{%- if docker_container_name == "database" %}
-    echo "Starting new {{docker_container_name}} container"
-{%- else %}
-    echo "Starting new {{docker_container_name}} container with HWSKU $HWSKU"
+    {%- if docker_container_name == "database" %}
+    echo "Creating new {{docker_container_name}}$DEV container"
+    # if database_config exists in old_config, use it; otherwise use the default one in new image
+    if [ -f /etc/sonic/old_config/database_config.json ]; then
+        echo "Use database_config.json from old system..."
+        mv /etc/sonic/old_config/database_config.json /etc/sonic/
+    fi
+    {%- else %}
+    echo "Creating new {{docker_container_name}}$DEV container with HWSKU $HWSKU"
+    {%- endif %}
+
+    if [ -z "$DEV" ]; then
+        NET="host"
+    else
+        {%- if docker_container_name == "database" %}
+        NET="bridge"
+        {%- else %}
+        NET="container:database$DEV"
+        {%- endif %}
+    fi
+{%- if docker_container_name == "bgp" %}
+    if [ "$DEV" ]; then
+        if [ ! -d "/etc/sonic/frr/$DEV" ]; then
+            mkdir /etc/sonic/frr/$DEV
+            cp -r /etc/sonic/frr/*.conf /etc/sonic/frr/$DEV
+        fi
+    fi
 {%- endif %}
-    docker run -d {{docker_image_run_opt}} \
+{%- if sonic_asic_platform == "mellanox" %}
+    # TODO: Mellanox will remove the --tmpfs exception after SDK socket path changed in new SDK version
+{%- endif %}
+    docker create {{docker_image_run_opt}} \
+        --net=$NET \
+        --uts=host \{# W/A: this should be set per-docker, for those dockers which really need host's UTS namespace #}
+{%- if install_debug_image == "y" %}
+        -v /src:/src:ro -v /debug:/debug:rw \
+{%- endif %}
 {%- if '--log-driver=json-file' in docker_image_run_opt or '--log-driver' not in docker_image_run_opt %}
         --log-opt max-size=2M --log-opt max-file=5 \
 {%- endif %}
-{%- if docker_container_name == "syncd" and sonic_asic_platform == "mellanox" %}
-        -e SX_SNIFFER_ENABLE \
-        -e SX_SNIFFER_TARGET \
-        -e PRM_SNIFFER \
-        -e PRM_SNIFFER_FILE_PATH \
+{%- if sonic_asic_platform == "mellanox" %}
+{%- if docker_container_name == "syncd" %}
         -v /var/log/mellanox/sniffer:/var/log/mellanox/sniffer:rw \
+        -v mlnx_sdk_socket:/var/run/sx_sdk \
+        -v mlnx_sdk_ready:/tmp \
+        -v /dev/shm:/dev/shm:rw \
+        -e SX_API_SOCKET_FILE=/var/run/sx_sdk/sx_api.sock \
+{%- elif docker_container_name == "pmon" %}
+        -v /var/run/hw-management:/var/run/hw-management:rw \
+        -v mlnx_sdk_socket:/var/run/sx_sdk \
+        -v mlnx_sdk_ready:/tmp \
+        -e SX_API_SOCKET_FILE=/var/run/sx_sdk/sx_api.sock \
+        -v /dev/shm:/dev/shm:rw \
+{%- else %}
+        --tmpfs /tmp \
 {%- endif %}
-        -v /var/run/redis:/var/run/redis:rw \
+{%- endif %}
+{%- if docker_container_name == "bgp" %}
+        -v /etc/sonic/frr/$DEV:/etc/frr:rw \
+{%- endif %}
+        -v /var/run/redis$DEV:/var/run/redis:rw \
         -v /usr/share/sonic/device/$PLATFORM:/usr/share/sonic/platform:ro \
 {%- if docker_container_name != "database" %}
-        -v /usr/share/sonic/device/$PLATFORM/$HWSKU:/usr/share/sonic/hwsku:ro \
+        -v /usr/share/sonic/device/$PLATFORM/$HWSKU/$DEV:/usr/share/sonic/hwsku:ro \
 {%- endif %}
+{%- if sonic_asic_platform != "mellanox" %}
         --tmpfs /tmp \
+{%- endif %}
         --tmpfs /var/tmp \
-        --name={{docker_container_name}} {{docker_image_name}}:latest || {
+        --name={{docker_container_name}}$DEV {{docker_image_name}}:latest || {
             echo "Failed to docker run" >&1
             exit 4
     }
 
+    preStartAction
+    docker start {{docker_container_name}}$DEV
     postStartAction
 }
 
-attach() {
-    docker attach --no-stdin {{docker_container_name}}
+wait() {
+    docker wait {{docker_container_name}}$DEV
 }
 
 stop() {
-    docker stop {{docker_container_name}}
+    docker stop {{docker_container_name}}$DEV
+{%- if docker_container_name == "database" %}
+    if [ "$DEV" ]; then
+        ip netns delete "$NET_NS"
+    fi
+{%- endif %}
 }
 
+OP=$1
+DEV=$2 # namespace/device number to operate on
+if [ "$DEV" ]; then
+    NET_NS="asic$DEV" #name of the network namespace
+else
+    NET_NS=""
+fi
+
 case "$1" in
-    start|stop|attach)
+    start|wait|stop)
         $1
         ;;
     *)
-        echo "Usage: $0 {start|stop|attach}"
+        echo "Usage: $0 {start namespace(optional)|wait namespace(optional)|stop namespace(optional)}"
         exit 1
         ;;
 esac

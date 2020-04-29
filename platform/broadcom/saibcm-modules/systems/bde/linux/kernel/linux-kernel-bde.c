@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: linux-kernel-bde.c,v 1.414 Broadcom SDK $
@@ -36,30 +35,22 @@
 
 #include "linux_shbde.h"
 
-#ifdef BCM_ROBO_SUPPORT
-/* robo/et related header files */
-#include <shared/et/typedefs.h>
 
-#include <shared/et/sbconfig.h>
-
-#if defined(KEYSTONE)
-#include <shared/et/aiutils.h>
-#include <sbchipc.h>
-#include <etc_robo_spi.h>
-#include <soc/gmac0_core.h>
-#elif defined(IPROC_CMICD)
-#include <shared/et/aiutils.h>
-#include <sbchipc.h>
-#ifdef BCM_STARFIGHTER3_SUPPORT
-#include <robo_spi.h>
-#endif
-#include <robo_srab.h>
-#include <soc/nsgmac2reg.h>
-#else /* BCM4704 */
-#include <shared/et/sbutils.h>
-#include <etc_robo.h>
-#endif 
-#endif /* BCM_ROBO_SUPPORT */
+#ifdef __GNUC__
+#if __GNUC__ == 8
+/*
+ * Prevent gcc 8.1.10 using a compiler inline memcpy even if using -fno-builtin or
+ * -fno-builtin-memcpy .
+ * __inline_memcpy and __memcpy are kernel functions that may be used instead,
+ * for either an inline or non-inline implementations of the function
+ */
+#define MEMCPY __inline_memcpy
+#else
+#define MEMCPY memcpy
+#endif /* __GNUC__ == 8 */
+#else /* ifdef __GNUC__ */
+#define MEMCPY memcpy
+#endif /* ifdef __GNUC__ */
 
 #define PCI_USE_INT_NONE    (-1)
 #define PCI_USE_INT_INTX     (0)
@@ -95,6 +86,8 @@ LKM_MOD_PARAM(nodevices, "i", int, 0);
 MODULE_PARM_DESC(nodevices,
 "Ignore all recognized devices (default no)");
 
+int msixcnt = 1;
+
 /*
  * This usually is defined at /usr/include/linux/pci_ids.h
  * But this ID is newer.
@@ -105,26 +98,6 @@ MODULE_PARM_DESC(nodevices,
 
 #ifndef PCI_DEVICE_ID_PLX_9056
 #define PCI_DEVICE_ID_PLX_9056 0x9056
-#endif
-
-/* local defined device IDs, refer to bcmdevs.h */
-#ifndef BCM53000_GMAC_ID
-#define BCM53000_GMAC_ID      0x4715      /* 53003 gmac id */
-#endif
-#ifndef BCM53010_GMAC_ID
-#define BCM53010_GMAC_ID      0x4715      /* 5301x gmac id */
-#endif
-#ifndef BCM47XX_ENET_ID
-#define BCM47XX_ENET_ID       0x4713      /* 4710 enet */
-#endif
-#ifndef BCM53010_CHIP_ID
-#define BCM53010_CHIP_ID      0xcf12      /* 53010 chipcommon chipid */
-#endif
-#ifndef BCM53018_CHIP_ID
-#define BCM53018_CHIP_ID      0xcf1a      /* 53018 chipcommon chipid */
-#endif
-#ifndef BCM53020_CHIP_ID
-#define BCM53020_CHIP_ID      0xcf1e      /* 53020 chipcommon chipid */
 #endif
 
 /* For 2.4.x kernel support */
@@ -185,14 +158,6 @@ MODULE_PARM_DESC(spifreq,
 "Force SPI Frequency for Keystone CPU (0 for default frequency)");
 #endif
 
-#if defined(BCM_EA_SUPPORT) 
-#if defined(BCM_TK371X_SUPPORT)
-static int eadevices;
-LKM_MOD_PARAM(eadevices, "i", int, 0);
-MODULE_PARM_DESC(eadevices,
-"Number of TK371X devices");
-#endif /* */
-#endif /* BCM_EA_SUPPORT */
 
 /* Compatibility */
 #ifdef LKM_2_4
@@ -202,7 +167,7 @@ MODULE_PARM_DESC(eadevices,
 #define IRQ_HANDLED
 #define SYNC_IRQ(_i) synchronize_irq()
 #else /* LKM_2_6 */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,31))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
 #define _ISR_RET irqreturn_t
 #else
 #define _ISR_RET int
@@ -211,6 +176,7 @@ MODULE_PARM_DESC(eadevices,
 #define _ISR_PARAMS(_i,_d,_r) int _i, void *_d
 #else
 #define _ISR_PARAMS(_i,_d,_r) int _i, void *_d, struct pt_regs *_r
+typedef irqreturn_t (*irq_handler_t)(int _i, void *_d, struct pt_regs *_r);
 #endif
 #define SYNC_IRQ(_i) synchronize_irq(_i)
 char * ___strtok;
@@ -363,53 +329,20 @@ static int _ndevices = 0;
 static int _switch_ndevices = 0;
 static int _ether_ndevices = 0;
 static int _cpu_ndevices = 0;
-static int  robo_switch = 0;
 
 #define VALID_DEVICE(_n) ((_n >= 0) && (_n < _ndevices))
 
+#if defined(IPROC_CMICD) && defined(CONFIG_OF)
+#define ICFG_CHIP_ID_REG      0x10236000
+#define IHOST_CMICX_MAX_INTRS 128
+static uint32 iproc_cmicx_irqs[IHOST_CMICX_MAX_INTRS];
+#endif
+
 /* CPU MMIO area used with CPU cards provided on demo boards */
-#if (defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT) || defined(BCM_DNX_SUPPORT) || defined(BCM_DNXF_SUPPORT)) && (defined(__DUNE_WRX_BCM_CPU__) || defined(__DUNE_GTO_BCM_CPU__))
+#if defined(BCM_SAND_SUPPORT) && (defined(__DUNE_WRX_BCM_CPU__) || defined(__DUNE_GTO_BCM_CPU__))
 static void *cpu_address = NULL;
 #endif
 
-#ifdef BCM_ROBO_SUPPORT
-
-/* for SPI access via bcm4710 core */
-static void *robo = NULL;
-static void *sbh = NULL;
-
-#ifdef ALTA_ROBO_SPI
-
-extern void *alta_eth_spi_ctrl;
-
-extern int
-robo_spi_read(void *cookie, uint16_t reg, uint8_t *buf, int len);
-
-extern int
-robo_spi_write(void *cookie, uint16_t reg, uint8_t *buf, int len);
-
-#define ROBO_RREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_spi_read(_dev ? NULL : alta_eth_spi_ctrl, \
-                      (_page << 8) | (_reg), _buf, _len)
-#define ROBO_WREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_spi_write(_dev ? NULL : alta_eth_spi_ctrl, \
-                       (_page << 8) | (_reg), _buf, _len)
-
-#else /* !ALTA_ROBO_SPI */
-
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-#define ROBO_RREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_rreg(_robo, _dev, _page, _reg, _buf, _len)
-#define ROBO_WREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_wreg(_robo, _dev, _page, _reg, _buf, _len)
-#else
-#define ROBO_RREG(_robo, _dev, _page, _reg, _buf, _len)
-#define ROBO_WREG(_robo, _dev, _page, _reg, _buf, _len)
-#endif
-
-#endif /* ALTA_ROBO_SPI */
-
-#endif /* BCM_ROBO_SUPPORT */
 
 /* Broadcom BCM4704 */
 #define BCM4704_VENDOR_ID 0x14E4
@@ -482,7 +415,7 @@ robo_spi_write(void *cookie, uint16_t reg, uint8_t *buf, int len);
 /* PLX PCI-E Switch */
 #define PLX_PEX8608_DEV_ID         0x8608
 #define PLX_PEX8617_DEV_ID         0x8617
-#define PLX_PEX86XX_DEV_CTRL_REG   0x70
+#define PLX_PEX86XX_DEV_CTRL_REG   0x70 
 
 /* Broadcom BCM58525 */
 #define BCM58525_PCI_VENDOR_ID     0x14E4
@@ -492,6 +425,17 @@ robo_spi_write(void *cookie, uint16_t reg, uint8_t *buf, int len);
 /* Broadcom BCM58712 */
 #define BCM58712_PCI_VENDOR_ID     0x14E4
 #define BCM58712_PCI_DEVICE_ID     0x168E
+
+/* Default gicd address if not available in DTB */
+#define IHOST_GICD_REG_ADDR        0x10781100
+#define IHOST_GICD_REG_REMAP_LEN   0x100
+
+#define IHOST_GICD_REG_ADDR_VALID(d, addr) \
+    (_devices[d].bde_dev.base_address1 && \
+    (addr & 0xFFFFFF00) == _devices[d].phys_address1)
+
+#define IHOST_GICD_REG_ADDR_REMAP(d, addr) \
+    (void *)(_devices[d].bde_dev.base_address1 + (addr - _devices[d].phys_address1))
 
 static uint32_t _read(int d, uint32_t addr);
 
@@ -541,6 +485,52 @@ _parse_eb_args(char *str, char * format, ...)
     return 0;
 }
 
+static void
+_bde_add_device(void)
+{
+    int add_switch_device = 0;
+    if (_devices[_ndevices].dev_type & BDE_SWITCH_DEV_TYPE) {
+        _switch_ndevices++;
+        add_switch_device = 1;
+    } else if (_devices[_ndevices].dev_type & BDE_ETHER_DEV_TYPE) {
+        _ether_ndevices++;
+    } else if (_devices[_ndevices].dev_type & BDE_CPU_DEV_TYPE) {
+        _cpu_ndevices++;
+    } else {
+        return;
+    }
+    _ndevices++;
+
+    /*
+     * In order to be backward compatible with the user mode BDE
+     * (specifically the interrupt IOCTLs) and the CM, switch devices
+     * *must* come first. If this is not the case (due to the probing
+     * order), we let the non-switch device(s) drop down to the end of
+     * the device array.
+     */
+    if (add_switch_device) {
+        bde_ctrl_t tmp_dev;
+        int i, s = 0;
+
+        while (s < _switch_ndevices) {
+            if (_devices[s].dev_type & BDE_SWITCH_DEV_TYPE) {
+                s++;
+                continue;
+            }
+            tmp_dev = _devices[s];
+            for (i = s; i < _ndevices - 1; i++) {
+                _devices[i] = _devices[i+1];
+            }
+            _devices[i] = tmp_dev;
+        }
+
+        _dma_init(_switch_ndevices-1);
+    }
+
+    /* Initialize device locks */
+    spin_lock_init(&_devices[_ndevices-1].lock);
+}
+
 static int
 _eb_device_create(resource_size_t paddr, int irq, int rd_hw, int wr_hw)
 {
@@ -549,8 +539,7 @@ _eb_device_create(resource_size_t paddr, int irq, int rd_hw, int wr_hw)
 
     dev_id = _ndevices;
 
-    ctrl = _devices + _ndevices++;
-    _switch_ndevices++;
+    ctrl = _devices + _ndevices;
 
     ctrl->dev_type |= BDE_EB_DEV_TYPE | BDE_SWITCH_DEV_TYPE;
     ctrl->pci_device = NULL; /* No PCI bus */
@@ -579,10 +568,12 @@ _eb_device_create(resource_size_t paddr, int irq, int rd_hw, int wr_hw)
     gprintk("Created EB device at BA=%x IRQ=%d RD16=%d WR16=%d device=0x%x\n",
             (unsigned int)paddr, irq, rd_hw, wr_hw, ctrl->bde_dev.device);
 
+    _bde_add_device();
+
     return 0;
 }
 
-#if defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT) || defined(BCM_DNX_SUPPORT) || defined(BCM_DNXF_SUPPORT)
+#ifdef BCM_SAND_SUPPORT
 
 #include <soc/devids.h>
 
@@ -594,9 +585,6 @@ sand_device_create(void)
     ctrl = _devices; /* FIX_ME: on petra, take first device */
 
 #ifndef __DUNE_LINUX_BCM_CPU_PCIE__
-    _switch_ndevices++;
-    _ndevices++;
-
     ctrl->dev_type |= BDE_PCI_DEV_TYPE | BDE_SWITCH_DEV_TYPE;
     ctrl->pci_device = NULL; /* No PCI bus */
 
@@ -628,9 +616,13 @@ sand_device_create(void)
         ctrl->dev_type |= BDE_PCI_DEV_TYPE | BDE_SWITCH_DEV_TYPE;
     }
 
+#ifndef __DUNE_LINUX_BCM_CPU_PCIE__
+    _bde_add_device();
+#endif
+
     return 0;
 }
-#endif
+#endif /* BCM_SAND_SUPPORT */
 
 #ifdef IPROC_CMICD
 static void
@@ -657,9 +649,9 @@ iproc_cmicd_get_irqres(ibde_dev_t bde_dev, struct resource *res_irq)
 #include <linux/platform_device.h>
 #include <linux/of.h>
 
-extern void iproc_platform_driver_register(struct platform_driver *drv);
+extern int iproc_platform_driver_register(struct platform_driver *drv);
 extern void iproc_platform_driver_unregister(struct platform_driver *drv);
-extern void iproc_platform_device_register(struct platform_device *drv);
+extern int iproc_platform_device_register(struct platform_device *drv);
 extern void iproc_platform_device_unregister(struct platform_device *drv);
 
 extern struct resource *
@@ -672,13 +664,14 @@ iproc_platform_get_resource(struct platform_device *dev, unsigned int type,
 #define IPROC_CMICD_INT         194
 
 #define IPROC_CMICD_COMPATIBLE "brcm,iproc-cmicd"
+#define IPROC_CMICX_COMPATIBLE "brcm,iproc-cmicx"
 
 static int
 iproc_cmicd_probe(struct platform_device *pldev)
 {
     bde_ctrl_t *ctrl;
     uint32 size, dev_rev_id;
-    struct resource *memres, *irqres;    
+    struct resource *memres, *irqres;
 #ifdef CONFIG_OF
     if (debug >= 1) {
         gprintk("iproc_cmicd_probe %s\n", pldev->dev.of_node ? "with device node":"");
@@ -686,13 +679,12 @@ iproc_cmicd_probe(struct platform_device *pldev)
 #endif
     memres = iproc_platform_get_resource(pldev, IORESOURCE_MEM, 0);
     if (memres == NULL) {
-        gprintk("Unable to retrieve iProc CMIC resources"); 
+        gprintk("Unable to retrieve iProc CMIC resources");
         return -1;
     }
     size = memres->end - memres->start + 1;
 
-    ctrl = _devices + _ndevices++;
-    _switch_ndevices++;
+    ctrl = _devices + _ndevices;
 
     ctrl->dev_type = BDE_AXI_DEV_TYPE | BDE_SWITCH_DEV_TYPE | BDE_256K_REG_SPACE;
     ctrl->pci_device = NULL; /* No PCI bus */
@@ -700,21 +692,55 @@ iproc_cmicd_probe(struct platform_device *pldev)
     /* Map CMIC block in the AXI memory space into CPU address space */
     ctrl->bde_dev.base_address = (sal_vaddr_t)IOREMAP(memres->start, size);
     if (!ctrl->bde_dev.base_address) {
-        gprintk("Error mapping iProc CMIC registers"); 
+        gprintk("Error mapping iProc CMIC registers");
         return -1;
     }
     ctrl->phys_address = memres->start;
 
-    /* Read switch device ID from CMIC */
-    dev_rev_id = *((uint32_t*)(ctrl->bde_dev.base_address + 0x10224));
-#if defined(BCM_CMICM_SUPPORT) && defined(BE_HOST)
-    ctrl->bde_dev.device = (  (((dev_rev_id >> 16) & 0xff) << 8) |
-                               ((dev_rev_id >> 24) & 0xff));
-    ctrl->bde_dev.rev    =      (dev_rev_id >>  8) & 0xff ;
-#else
-    ctrl->bde_dev.device = dev_rev_id & 0xffff;
-    ctrl->bde_dev.rev = (dev_rev_id >> 16) & 0xff;
+#ifdef CONFIG_OF
+    if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+        uint32 *icfg_chip_id;
+        icfg_chip_id = (uint32 *)IOREMAP(ICFG_CHIP_ID_REG, 2 * sizeof(uint32));
+        if (icfg_chip_id == NULL) {
+            gprintk("Error mapping ICFG_CHIP_ID_REG\n");
+            return -1;
+        }
+        ctrl->bde_dev.device = readl(icfg_chip_id) & 0xffff;
+        ctrl->bde_dev.rev = readl(icfg_chip_id+1) & 0xff;
+        iounmap(icfg_chip_id);
+        /* Map GICD block in the AXI memory space into CPU address space */
+        memres = iproc_platform_get_resource(pldev, IORESOURCE_MEM, 1);
+        if (memres) {
+            ctrl->bde_dev.base_address1 = (sal_vaddr_t)IOREMAP(memres->start, memres->end - memres->start + 1);
+            ctrl->phys_address1 = memres->start;
+        } else {
+            /* Use default address if not available in DTB */
+            ctrl->bde_dev.base_address1 = (sal_vaddr_t)IOREMAP(IHOST_GICD_REG_ADDR, IHOST_GICD_REG_REMAP_LEN);
+            ctrl->phys_address1 = IHOST_GICD_REG_ADDR;
+        }
+        if (ctrl->bde_dev.base_address1) {
+            if (debug >= 1) {
+                gprintk("base_address1:0x%lx phys_address1:0x%lx\n",
+                        (unsigned long)ctrl->bde_dev.base_address1, (unsigned long)ctrl->phys_address1);
+            }
+        } else {
+            gprintk("Error mapping ihost GICD registers\n");
+        }
+    } else
 #endif
+    {
+        /* Read switch device ID from CMIC */
+        dev_rev_id = *((uint32 *)(ctrl->bde_dev.base_address + 0x10224));
+#if defined(BCM_CMICM_SUPPORT) && defined(BE_HOST)
+        ctrl->bde_dev.device = (  (((dev_rev_id >> 16) & 0xff) << 8) |
+                                   ((dev_rev_id >> 24) & 0xff));
+        ctrl->bde_dev.rev    =      (dev_rev_id >>  8) & 0xff ;
+#else
+        ctrl->bde_dev.device = dev_rev_id & 0xffff;
+        ctrl->bde_dev.rev = (dev_rev_id >> 16) & 0xff;
+#endif
+        ctrl->bde_dev.base_address1 = 0;
+    }
 
 #ifdef CONFIG_OF
     if (!pldev->dev.of_node)
@@ -723,9 +749,24 @@ iproc_cmicd_probe(struct platform_device *pldev)
         /* Assign locally if not available from device node */
         iproc_cmicd_get_irqres(ctrl->bde_dev, &pldev->resource[0]);
     }
-    irqres = iproc_platform_get_resource(pldev, IORESOURCE_IRQ, 0);
 
-    ctrl->iLine = irqres->start;
+#ifdef CONFIG_OF
+    if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+        int i;
+        for (i = 0; i < IHOST_CMICX_MAX_INTRS; i++) {
+            irqres = iproc_platform_get_resource(pldev, IORESOURCE_IRQ, i);
+            iproc_cmicx_irqs[i] = irqres->start;
+            if (debug >= 1) {
+                gprintk("iproc_cmicx_irqs[%d] = %d\n", i, iproc_cmicx_irqs[i]);
+            }
+        }
+        ctrl->iLine = iproc_cmicx_irqs[0];
+    } else
+#endif
+    {
+        irqres = iproc_platform_get_resource(pldev, IORESOURCE_IRQ, 0);
+        ctrl->iLine = irqres->start;
+    }
 
     ctrl->isr = NULL;
     ctrl ->isr_data = NULL;
@@ -735,6 +776,7 @@ iproc_cmicd_probe(struct platform_device *pldev)
 #endif
 
     /* Let's boogie */
+    _bde_add_device();
     return 0;
 }
 
@@ -745,14 +787,15 @@ iproc_cmicd_remove(struct platform_device *pldev)
 }
 #ifdef CONFIG_OF
 static const struct of_device_id iproc_cmicd_of_match[] = {
-    { .compatible = "brcm,iproc-cmicd" },
+    { .compatible = IPROC_CMICD_COMPATIBLE },
+    { .compatible = IPROC_CMICX_COMPATIBLE },
     {},
 };
 MODULE_DEVICE_TABLE(of, iproc_cmicd_of_match);
 #endif
 static char iproc_cmicd_string[] = "bcmiproc-cmicd";
 
-static struct platform_driver iproc_cmicd_driver = 
+static struct platform_driver iproc_cmicd_driver =
 {
     .probe = iproc_cmicd_probe,
     .remove = iproc_cmicd_remove,
@@ -821,10 +864,6 @@ iproc_has_cmicd(void)
 
     /* Only allowed accessing CMICD module if the SOC has it */
     switch (cca_cid) {
-        case BCM53010_CHIP_ID:
-        case BCM53018_CHIP_ID:
-        case BCM53020_CHIP_ID:
-            return 0;
         default:
             break;
     }
@@ -955,10 +994,10 @@ iproc_cmicd_get_memregion(struct resource *res_mem)
     iounmap(erom_base);
 
     if (debug >= 1) {
-        gprintk("CMICD info by %s: cmicd_mem.start=%x, cmicd_mem.end=%x\n",
+        gprintk("CMICD info by %s: cmicd_mem.start=%lx, cmicd_mem.end=%lx\n",
                 found_cmicd_dev ? "EROM" : "Default",
-                iproc_cmicd_resources[IPROC_CMICD_RES_MEM].start,
-                iproc_cmicd_resources[IPROC_CMICD_RES_MEM].end);
+                (unsigned long)iproc_cmicd_resources[IPROC_CMICD_RES_MEM].start,
+                (unsigned long)iproc_cmicd_resources[IPROC_CMICD_RES_MEM].end);
     }
 }
 #endif /* IPROC_CMICD */
@@ -972,8 +1011,7 @@ _ics_bde_create(void)
     resource_size_t paddr;
 
     if (_ndevices == 0) {
-        ctrl = _devices + _ndevices++;
-        _switch_ndevices++;
+        ctrl = _devices + _ndevices;
 
         ctrl->dev_type |= BDE_ICS_DEV_TYPE | BDE_SWITCH_DEV_TYPE;
         ctrl->pci_device = NULL; /* No PCI bus */
@@ -993,6 +1031,7 @@ _ics_bde_create(void)
         ctrl->isr = NULL;
         ctrl->isr_data = NULL;
         printk("Created ICS device ..%x\n", ctrl->bde_dev.base_address);
+        _bde_add_device();
     }
 
     return 0;
@@ -1007,7 +1046,7 @@ extern struct pci_bus *pci_find_bus(int domain, int busnr);
  * Populated from the include/soc/devids.h file.
  */
 
-static struct pci_device_id _id_table[] = {
+static const struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM5675_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM5676_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56218X_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1167,7 +1206,6 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56150_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56151_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56152_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM56613_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56930_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56931_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56935_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1220,14 +1258,6 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56044_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56045_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56046_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88230_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88030_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88034_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88039_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88231_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88235_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88236_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88239_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM55440_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56440_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56441_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1327,6 +1357,7 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56971_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56972_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56974_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56975_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56168_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56169_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56560_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1335,8 +1366,14 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56565_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56566_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56567_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56670_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56671_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56672_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56675_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56568_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56670_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56760_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56761_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56762_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56764_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56765_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1362,15 +1399,6 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56174_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM53570_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM53575_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-#ifdef BCM_ROBO_SUPPORT
-    { BROADCOM_VENDOR_ID, BCM47XX_ENET_ID, PCI_ANY_ID, PCI_ANY_ID },
-#ifdef KEYSTONE 
-    { BROADCOM_VENDOR_ID, BCM53000_GMAC_ID, PCI_ANY_ID, PCI_ANY_ID },
-#endif
-#endif
-    { SANDBURST_VENDOR_ID, QE2000_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { SANDBURST_VENDOR_ID, BCM88020_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { SANDBURST_VENDOR_ID, BCM88025_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9656, PCI_ANY_ID, PCI_ANY_ID },
     { PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9056, PCI_ANY_ID, PCI_ANY_ID },
     { BCM53000_VENDOR_ID, BCM53000PCIE_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1418,7 +1446,9 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM88270_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88272_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88273_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88274_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88278_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88279_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
 
     { BROADCOM_VENDOR_ID, BCM8206_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
 
@@ -1435,7 +1465,6 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM88685_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88380_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88381_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
-    { BROADCOM_VENDOR_ID, BCM88690_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88202_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88360_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88361_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1448,6 +1477,25 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM88661_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88664_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
 #endif
+#ifdef BCM_DNX_SUPPORT
+    { BROADCOM_VENDOR_ID, BCM88690_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88690_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88691_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88692_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88693_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88694_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88695_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88696_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88697_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88698_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88699_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8869A_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8869B_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8869C_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8869D_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8869F_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88800_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+#endif /* BCM_DNX_SUPPORT */
 #ifdef BCM_DFE_SUPPORT
     { BROADCOM_VENDOR_ID, BCM88750_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM88753_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1471,6 +1519,20 @@ static struct pci_device_id _id_table[] = {
 #endif
 #ifdef BCM_DNXF_SUPPORT
     { BROADCOM_VENDOR_ID, BCM88790_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88791_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88792_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88793_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88794_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88795_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88796_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88797_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88798_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM88799_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8879A_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8879B_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8879C_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8879D_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM8879F_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
 #endif
     { BROADCOM_VENDOR_ID, BCM56860_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56861_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
@@ -1484,9 +1546,32 @@ static struct pci_device_id _id_table[] = {
     { BROADCOM_VENDOR_ID, BCM56832_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56836_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56870_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56370_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56371_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56372_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56374_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56375_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56376_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56377_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56577_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56578_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56579_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { BROADCOM_VENDOR_ID, BCM56873_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56770_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56771_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56980_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56981_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56982_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56983_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM56984_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM53540_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM53547_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM53548_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
+    { BROADCOM_VENDOR_ID, BCM53549_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID },
     { 0, 0, 0, 0 }
 };;
+
+MODULE_DEVICE_TABLE(pci, _id_table);
 
 #define pci_bus_b(n) list_entry(n, struct pci_bus, node)
 #define pci_dev_b(n) list_entry(n, struct pci_dev, bus_list)
@@ -1912,6 +1997,7 @@ _pci_msix_table_size(struct pci_dev *dev)
        if (nr_entries < 0) {
            nr_entries = 0;
        }
+       pci_disable_msix(dev);
        kfree(entries);
     }
 }
@@ -1927,45 +2013,52 @@ _pci_msix_table_size(struct pci_dev *dev)
 static int
 _msi_connect(bde_ctrl_t *ctrl)
 {
-
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,84))
     int ret;
     if (ctrl->use_msi == PCI_USE_INT_MSIX) {
         int i;
-        ret = _pci_msix_table_size(ctrl->pci_device);
 
+        ret = _pci_msix_table_size(ctrl->pci_device);
         if (ret == 0) {
             /* MSI-X failed */
             gprintk("MSI-X not supported.\n");
             goto er_intx;
         }
-        ctrl->entries = kcalloc(ret, sizeof(struct msix_entry)*ret, GFP_KERNEL);
+        ctrl->entries = kcalloc(ret, sizeof(struct msix_entry), GFP_KERNEL);
 
         if (!ctrl->entries) {
             goto er_intx;
         }
-        /* We need only that much interrupt vecotrs */
-        ctrl->msix_cnt = ret/4;
+        /* Only one vector is mapped by default */
+        /* May be more in future, can be controlled using module param */
+        ctrl->msix_cnt = msixcnt;
         if (unlikely(debug > 1))
             gprintk("MSIX Table size = %d\n", ctrl->msix_cnt);
         for (i = 0; i < ctrl->msix_cnt; i++)
                 ctrl->entries[i].entry = i;
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,12,0)
+        ret = pci_enable_msix_range(ctrl->pci_device,
+                                           ctrl->entries, ctrl->msix_cnt, ctrl->msix_cnt);
+#else
         ret = pci_enable_msix(ctrl->pci_device,
                                            ctrl->entries, ctrl->msix_cnt);
         if (ret > 0) {
             /* Not enough vectors available , Retry MSI-X */
             gprintk("Retrying with MSI-X interrupts = %d\n", ret);
             ctrl->msix_cnt = ret;
+            msixcnt = ret;
             ret = pci_enable_msix(ctrl->pci_device,
                                            ctrl->entries, ctrl->msix_cnt);
             if (ret != 0)
                 goto er_intx_free;
-        } else if (ret < 0) {
-              /* Error */
-              goto er_intx_free;
+        }
+#endif
+        if (ret < 0) {
+            /* Error */
+            goto er_intx_free;
         } else {
-          gprintk("Enabled MSI-X interrupts = %d\n", ctrl->msix_cnt);
+            gprintk("Enabled MSI-X interrupts = %d\n", ctrl->msix_cnt);
+            return 0;
         }
     }
 #endif
@@ -1980,7 +2073,7 @@ _msi_connect(bde_ctrl_t *ctrl)
         }
     } else {
         /* failed */
-        gprintk("Not MSI/MSIC interrupt.\n");
+        gprintk("Not MSI/MSIX interrupt.\n");
         goto er_intx;
     }
     return 0;
@@ -1999,9 +2092,12 @@ _msi_disconnect(bde_ctrl_t *ctrl)
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,84))
     if (ctrl->use_msi == PCI_USE_INT_MSIX) {
-        pci_disable_msix(ctrl->pci_device);
-        kfree(ctrl->entries);
-        ctrl->msix_cnt = 0;
+        if (ctrl->msix_cnt) {
+            pci_disable_msix(ctrl->pci_device);
+            kfree(ctrl->entries);
+            ctrl->entries = NULL;
+            ctrl->msix_cnt = 0;
+        }
     }
 #endif
     if (ctrl->use_msi == PCI_USE_INT_MSI) {
@@ -2016,15 +2112,29 @@ _msi_disconnect(bde_ctrl_t *ctrl)
 
 
 static void
-config_pci_intr_type(bde_ctrl_t *ctrl)
+config_pci_intr_type(struct pci_dev *dev, bde_ctrl_t *ctrl, int iproc)
 {
-
 #ifdef CONFIG_PCI_MSI
     int ret;
+    shbde_iproc_config_t icfg;
 
+    /* Each device follows global policy by default */
     ctrl->use_msi = use_msi;
+
     if (unlikely(debug > 1))
         gprintk("%s: msi = %d\n", __func__, ctrl->use_msi);
+
+    /* Check IPROC version for MSIX support */
+    if (iproc && ctrl->bde_dev.base_address1 &&
+                (ctrl->use_msi == PCI_USE_INT_MSIX)) {
+        if (shbde_pci_iproc_version_get(&ctrl->shbde, dev, &icfg.iproc_ver,
+                                         &icfg.cmic_ver, &icfg.cmic_rev)) {
+            if (icfg.iproc_ver < 0xe) {
+                gprintk("%s: MSI-X not supported, using MSI.\n", __func__);
+                ctrl->use_msi = PCI_USE_INT_MSI;
+            }
+        }
+    }
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,84))
     if (ctrl->use_msi == PCI_USE_INT_MSIX) {
@@ -2039,10 +2149,10 @@ config_pci_intr_type(bde_ctrl_t *ctrl)
 
     if (ctrl->use_msi == PCI_USE_INT_MSI) {
         /* check for support MSI vector */
-            ret = pci_enable_msi(ctrl->pci_device);
+        ret = pci_enable_msi(ctrl->pci_device);
         if (ret < 0) {
             ctrl->use_msi = PCI_USE_INT_INTX;
-            gprintk("%s: Failed to enable MSI\n", __func__);
+            gprintk("%s: Failed to enable MSI, using INTx.\n", __func__);
         } else {
             pci_disable_msi(ctrl->pci_device);
         }
@@ -2073,13 +2183,12 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
     int cmic_bar;
     int baroff = 0;
     int iproc = 0;
-    uint32 gmac_base = 0;
     int plx_dev = 0;
     int eth_dev = 0;
     int cpu_dev = 0;
     int update_devid = 0;
     int paxb_core = 0;
-    int rescan = 0, rescan_idx = -1;
+    int add_dev = 0, rescan = 0, rescan_idx = -1;
     shbde_hal_t shared_bde, *shbde = &shared_bde;
 
     if (debug >= 4) {gprintk("probing: vendor_id=0x%x, device_id=0x%x\n", dev->vendor, dev->device);}
@@ -2125,17 +2234,6 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
     case PCI_DEVICE_ID_PLX_9656:
         plx_dev = 1;
         break;
-#if defined (BCM_ROBO_SUPPORT) && defined(KEYSTONE)
-    case BCM53000_GMAC_ID:
-        eth_dev = 1;
-        gmac_base = SB_ENUM_BASE;
-        break;
-#endif
-#if defined (BCM_ROBO_SUPPORT)
-    case BCM47XX_ENET_ID:
-        eth_dev = 1;
-        break;
-#endif
     case BCM53000PCIE_DEVICE_ID:
         cpu_dev = 1;
         break;
@@ -2177,10 +2275,10 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
         if (_ether_ndevices >= LINUX_BDE_MAX_ETHER_DEVICES) {
             return 0;;
         }
-        ctrl = _devices + _ndevices++;
-        _ether_ndevices++;
+        ctrl = _devices + _ndevices;
         ctrl->dev_type |= BDE_ETHER_DEV_TYPE;
         ctrl->iLine = dev->irq;
+        add_dev = 1;
         if (debug >= 1)
             gprintk("Found PCI device %04x:%04x as Ethernet device\n",
                     dev->vendor, dev->device);
@@ -2188,9 +2286,9 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
         if (_cpu_ndevices >= LINUX_BDE_MAX_CPU_DEVICES) {
             return 0;;
         }
-        ctrl = _devices + _ndevices++;
-        _cpu_ndevices++;
+        ctrl = _devices + _ndevices;
         ctrl->dev_type |= BDE_CPU_DEV_TYPE;
+        add_dev = 1;
         if (debug >= 1)
             gprintk("Found PCI device %04x:%04x as CPU device\n",
                     dev->vendor, dev->device);
@@ -2199,7 +2297,7 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
             return 0;
         }
         if (_switch_ndevices >= LINUX_BDE_MAX_SWITCH_DEVICES) {
-            return 0;;
+            return 0;
         }
 
         if (rescan) {
@@ -2210,16 +2308,16 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
             ctrl = _devices + rescan_idx;
             ctrl->dev_state = BDE_DEV_STATE_CHANGED;
         } else {
-            ctrl = _devices + _ndevices++;
-            _switch_ndevices++;
+            ctrl = _devices + _ndevices;
             ctrl->dev_type |= BDE_SWITCH_DEV_TYPE;
             ctrl->domain_no = pci_domain_nr(dev->bus);
             ctrl->bus_no = dev->bus->number;
             ctrl->dev_state = BDE_DEV_STATE_NORMAL;
+            add_dev = 1;
         }
 
         /* Save shared BDE HAL in device structure */
-        memcpy(&ctrl->shbde, shbde, sizeof(ctrl->shbde));
+        MEMCPY(&ctrl->shbde, shbde, sizeof(ctrl->shbde));
 
         if (update_devid) {
             /* Re-read the device ID */
@@ -2403,18 +2501,15 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 #endif /* BCM_DFE_SUPPORT */
 
 #if defined(BCM_DNXF_SUPPORT)
-    switch (dev->device) {
-    case BCM88790_DEVICE_ID:
-
+    /*All Ramon devices from 0x8790 to 0x879F*/
+    if ((dev->device & BCM_DNXF_DEVID_MASK) == BCM88790_DEVICE_ID) {
         /*
          * For DMA transactions - set Max_Payload_Size and
          * Max_Read_Request_Size to 128 bytes.
          */
         pci_write_config_byte(dev, 0xb5, 0x0c);
         pci_write_config_byte(dev, 0xb4, 0x0);
-        break;
-    default:
-        break;
+
     }
 #endif
 
@@ -2484,22 +2579,8 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
         }
     }
 
-    /* Each device follows global policy by default */
-    ctrl->use_msi = use_msi;
-
-    /* Check is MSI is properly supported in kernel for this device */
-    if (ctrl->use_msi) {
-        if (pci_enable_msi(ctrl->pci_device) == 0) {
-            /* Release MSI resources until interrupt_connect is called */
-            pci_disable_msi(ctrl->pci_device);
-        } else {
-            gprintk("Could not enable MSI interrupts\n");
-            ctrl->use_msi = 0;
-        }
-    }
-
     /* configure interrupt type */
-    config_pci_intr_type(ctrl);
+    config_pci_intr_type(dev, ctrl, iproc);
 
     /* Configure iProc PCI-AXI bridge */
     if (iproc && ctrl->bde_dev.base_address1) {
@@ -2514,7 +2595,7 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
                                           &icfg->cmic_ver, &icfg->cmic_rev);
         shbde_iproc_config_init(icfg, ctrl->bde_dev.device, ctrl->bde_dev.rev);
 
-        if (debug >=2) {
+        if (debug >= 2) {
             gprintk("iproc version = %x dma_hi_bits  =  %x\n", icfg->iproc_ver, icfg->dma_hi_bits);
         }
         icfg->use_msi = ctrl->use_msi;
@@ -2537,60 +2618,8 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
     }
 
     /* Save shared BDE HAL in device structure */
-    memcpy(&ctrl->shbde, shbde, sizeof(ctrl->shbde));
+    MEMCPY(&ctrl->shbde, shbde, sizeof(ctrl->shbde));
 
-#if defined(VENDOR_BROADCOM)
-#if defined(BCM_PLX9656_LOCAL_BUS) && defined(SHADOW_SVK)
-    if (num_plx) {
-        sal_vaddr_t base_address;
-        uint32 intr_enable;
-
-        paddr = pci_resource_start(dev, 0);
-        bar_len = pci_resource_len(dev, 0);
-        base_address = (sal_vaddr_t)IOREMAP(paddr, bar_len);
-
-        intr_enable = readl((uint32 *)(base_address + 0x68));
-        gprintk("PLX Interrupt ENABLE: %x\n", intr_enable);
-        intr_enable |= 0x00080000;
-        writel(intr_enable, (uint32 *)(base_address + 0x68));
-        gprintk("PLX Interrupt ENABLE: %x\n", intr_enable);
-    }
-#endif
-#endif
-
-    /*
-     * Since the GMAC driver of Robo chips needs access to the
-     * ChipCommon and Wrapper registers, we set the base address
-     * as the enumeration base address and its size as 3MB to
-     * cover all Wrapper register regions. 
-     */
-    if (gmac_base) {
-        uint32_t offset;
-
-        ctrl->bde_dev.base_address = (sal_vaddr_t)IOREMAP(gmac_base, 0x300000);
-
-        /* Record the base address of GMAC core */
-        offset = ctrl->phys_address - gmac_base;
-        ctrl->alt_base_addr = ctrl->bde_dev.base_address + offset;
-        ctrl->phys_address = gmac_base;
-    }
-
-    /*
-     * Workaround bug in FE2K A1 part; shows as A0 part in PCI config space,
-     * read the FE's regs directly to get the true revision
-     */
-    if (ctrl->bde_dev.device == BCM88020_DEVICE_ID && ctrl->bde_dev.rev == 0) {
-#define FE2000_REVISION_OFFSET      (0x0)
-        uint32_t fe_rev;
-
-        fe_rev = *((uint32_t*)(ctrl->bde_dev.base_address + FE2000_REVISION_OFFSET));
-        if ((fe_rev >> 16) == BCM88020_DEVICE_ID) {
-            fe_rev &= 0xff;
-        } else {
-            fe_rev = (fe_rev >> 24) & 0xff;
-        }
-        ctrl->bde_dev.rev = fe_rev;
-    }
 
     ctrl->isr = NULL;
     ctrl->isr_data = NULL;
@@ -2604,17 +2633,14 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
 
     /* Check if we need 256 KB memory window (default is 64 KB) */
     bar_len = pci_resource_len(dev, baroff);
-    if ((bar_len == 0x40000) || (bar_len == 0x800000)) {
+    if (bar_len == 0x40000) {
         ctrl->dev_type |= BDE_256K_REG_SPACE;
         if (debug >= 1) gprintk("PCI resource len 256K\n");
+    } else if (bar_len == 0x800000) {
+        ctrl->dev_type |= BDE_256K_REG_SPACE | BDE_8MB_REG_SPACE;
+        if (debug >= 1) gprintk("PCI resource len 8MB\n");
     }
 
-#if defined (BCM_ROBO_SUPPORT) && !defined(ALTA_ROBO_SPI)
-    /* MDC/MDIO path for pseudo PHY access to ROBO register on BCM5836/4704 */
-    if (dev->device == BCM47XX_ENET_ID) {
-        ((uint32 *)ctrl->bde_dev.base_address)[0x410 / 4] = 0;
-    }
-#endif
 
 #ifdef LINUX_BDE_DMA_DEVICE_SUPPORT
     ctrl->dma_dev = &dev->dev;
@@ -2625,8 +2651,11 @@ _pci_probe(struct pci_dev *dev, const struct pci_device_id *ent)
           (unsigned)ctrl->bde_dev.device, (unsigned)ctrl->bde_dev.rev,
           (unsigned long)ctrl->bde_dev.base_address, (unsigned long)ctrl->bde_dev.base_address1);
     }
-    /* Let's boogie */
 
+    if (add_dev) {
+        _bde_add_device();
+    }
+    /* Let's boogie */
     return 0;
 }
 
@@ -2679,7 +2708,7 @@ _pci_remove(struct pci_dev* dev)
         if (ctrl->use_msi >= PCI_USE_INT_MSIX) {
             int i;
             for (i = 0; i < ctrl->msix_cnt; i++)
-                free_irq(ctrl->entries[i].vector, ctrl->pci_device);
+                free_irq(ctrl->entries[i].vector, ctrl);
         }
         else
 #endif
@@ -2706,8 +2735,7 @@ static struct pci_driver _device_driver = {
 static void
 _spi_device_setup(void) {
     bde_ctrl_t *ctrl;
-    ctrl = _devices + _ndevices++;
-    _switch_ndevices++;
+    ctrl = _devices + _ndevices;
     ctrl->dev_type |= BDE_SWITCH_DEV_TYPE;
     ctrl->iLine = 0xa3;
     ctrl->be_pio = 0;
@@ -2719,481 +2747,12 @@ _spi_device_setup(void) {
         gprintk("SPI Slave Mode: force ctrl->bde_dev.rev=0x%x\n",ctrl->bde_dev.rev);
         gprintk("SPI Slave Mode: force ctrl->dev_type=0x%x\n",ctrl->dev_type);
     }
+    _bde_add_device();
 }
 #endif /* BCM_ICS */
 
 
-#ifdef BCM_ROBO_SUPPORT
 
-#ifdef KEYSTONE
-#define DEFAULT_FREQ    (SPI_FREQ_DEFAULT)
-#define FREQ_20MHZ      (SPI_FREQ_20MHZ)
-#else /* IPROC_CMICD */   
-#define DEFAULT_FREQ    (0)
-#define FREQ_20MHZ      (0)
-#endif
-
-
-/*
-* The model_info /rev_info for Robo devices is defined like this:
-*
-* 31 28 27     24 23  20 19 16 15      8 7      0
-* +----+---------+------+-----+---------+--------+
-* | op | reserved| mask |len  | page    |offset  |
-* +----+---------+------+-----+---------+--------+
-*
-* op:          1:OR phyidl, 2: use PCIE device ID
-* mlen:      mask len (in bytes) 1:means 0xf,2 means 0xff
-* len:         Size of model/rev ID register (in bytes)
-* page:      Page containing model ID and revision registers
-* offset:     Model/rev ID register offset
-*/
-static struct bde_spi_device_id _spi_id_table[] = {
-    { BCM53242_PHYID_HIGH, BCM53242_PHYID_LOW , 0, 0, DEFAULT_FREQ},
-    { BCM53262_PHYID_HIGH, BCM53262_PHYID_LOW , 0, 0, DEFAULT_FREQ},
-    { BCM53115_PHYID_HIGH, BCM53115_PHYID_LOW , 0, 0, DEFAULT_FREQ},
-    { BCM53118_PHYID_HIGH, BCM53118_PHYID_LOW , 0, 0, DEFAULT_FREQ},
-    { BCM53280_PHYID_HIGH, BCM53280_PHYID_LOW , 0x101800e8, 0, FREQ_20MHZ},
-    { BCM53101_PHYID_HIGH, BCM53101_PHYID_LOW , 0, 0x110240, FREQ_20MHZ},
-    { BCM53125_PHYID_HIGH, BCM53125_PHYID_LOW , 0, 0x110240, FREQ_20MHZ},
-    { BCM53128_PHYID_HIGH, BCM53128_PHYID_LOW , 0, 0x110240, FREQ_20MHZ},
-    { BCM53600_PHYID_HIGH, BCM53600_PHYID_LOW , 0x101800e8, 0, FREQ_20MHZ},
-    { BCM89500_PHYID_HIGH, BCM89500_PHYID_LOW ,0x240230, 0x110240, FREQ_20MHZ},
-    { BCM53010_PHYID_HIGH, BCM53010_PHYID_LOW ,0x240230, 0x110240, 0},
-    { BCM53018_PHYID_HIGH, BCM53018_PHYID_LOW ,0x240230, 0x110240, 0},
-    { BCM5389_PHYID_HIGH, BCM5389_PHYID_LOW, 0x110230, 0x110240, DEFAULT_FREQ},
-    { BCM53020_PHYID_HIGH, BCM53020_PHYID_LOW ,0x20240230, 0x110240, 0},
-    { BCM5396_PHYID_HIGH , BCM5396_PHYID_LOW, 0x110230, 0x110240, DEFAULT_FREQ},
-    { BCM53134_PHYID_HIGH, BCM53134_PHYID_LOW , 0, 0x110240, DEFAULT_FREQ},
-    { 0, 0, 0, 0, 0 },
-};
-#endif
-
-#ifdef BCM_ROBO_SUPPORT
-
-static int
-_spi_device_valid_check(unsigned short phyidh,unsigned short phyidl, uint8 check_flag)
-{
-    struct bde_spi_device_id *_ids;
-    int idx, match_idx;
-
-    match_idx = -1;
-    idx = 0;
-
-    if (check_flag == 0){
-    /* check_flag == 0 check phyidh only*/
-        for (_ids = _spi_id_table;
-            _ids->phyid_high && _ids->phyid_low; _ids++){
-            if (_ids->phyid_high == phyidh) {
-                return 0;
-            }
-        }
-        /* No valid SPI devices found */
-        return 1;
-    } else {        
-        while(_spi_id_table[idx].phyid_high){
-            if (phyidh == _spi_id_table[idx].phyid_high &&
-                phyidl == _spi_id_table[idx].phyid_low) {
-                /* Found a match */
-                match_idx = idx;
-                break;
-            }
-            idx++;
-        }
-        return match_idx;
-    }
-}
-
-#if defined(IPROC_CMICD) || defined(KEYSTONE)
-#define ROBO_ATTACH_AVAIL
-#endif
-
-#ifdef ROBO_ATTACH_AVAIL
-
-#define SOC_ATTACH(_sc)\
-  ai_soc_kattach(_sc)
-  
-#if defined(IPROC_CMICD)
-#ifdef BCM_STARFIGHTER3_SUPPORT
-#define ROBO_ATTACH_SPI(_sih, _ss)\
-    robo_attach_spi(_sih)
-#define ROBO_DETACH_SPI(robo)\
-    robo_detach_spi(robo)
-#define ROBO_SPI_RREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_spi_rreg(_robo, _dev, _page, _reg, _buf, _len)
-#define ROBO_SPI_WREG(_robo, _dev, _page, _reg, _buf, _len) \
-        robo_spi_wreg(_robo, _dev, _page, _reg, _buf, _len)
-#endif
-#define ROBO_ATTACH(_sih, _ss)\
-    robo_attach(_sih)
-#define MAX_BUSTYPE 1
-#define ROBO_SWITCH_BUS(_robo, _bustype)
-#define ROBO_SELECT_DEVICE(_robo, _phyidh, _phyidl)
-#else  /* KEYSTONE */
-#define ROBO_ATTACH(_sih, _ss)\
-    robo_attach(_sih, _ss)
-/* bustype 2: ROBO_MDCMDIO_BUS, 1: ROBO_SPI_BUS */
-#define MAX_BUSTYPE 2
-#define ROBO_SWITCH_BUS(_robo, _bustype)\
-    robo_switch_bus(_robo, _bustype)
-
-#define ROBO_SELECT_DEVICE(_robo, _phyidh, _phyidl) \
-    robo_select_device(_robo, _phyidh, _phyidl)
-#endif
-
-#else
-
-#define SOC_ATTACH(_sc)        (NULL)
-#define ROBO_ATTACH(_sih, _ss)    (NULL)
-#define MAX_BUSTYPE        (0)
-#define ROBO_SWITCH_BUS(_robo, _bustype) 
-#define ROBO_SELECT_DEVICE(_robo, _phyidh, _phyidl)
-#endif
-
-
-#if defined(IPROC_CMICD) && defined(BCM_STARFIGHTER3_SUPPORT)
-static int
-probe_robo_switch_iproc_spi(void)
-{
-    int dev;
-    int max_devices, max_bustype;
-    uint8   buf[8];
-    unsigned short phyidh = 0, phyidl = 0;
-
-
-    /* Get Robo device handle */
-    if (robo == NULL) {
-        robo = (void *)ROBO_ATTACH_SPI(sbh, 0);
-    }
-    if (robo == NULL) {
-        return -ENODEV;
-    }
-
-    max_bustype = MAX_BUSTYPE + 1;
-
-    while(_spi_device_valid_check(phyidh, 0, 0)) {
-        max_bustype --;
-        if(!max_bustype)
-            return -ENODEV;
-        buf[0] = buf[1] = 0;
-        ROBO_SPI_RREG(robo, 0, 0x10, 0x04, buf, (uint)2);
-        phyidh = buf[0] | (buf[1] << 8);
-        /* re-try */
-        if ((phyidh == 0x0) || (phyidh == 0xffff)) {
-            ROBO_SPI_RREG(robo, 0, 0x10, 0x04, buf, (uint)2);
-            phyidh = buf[0] | (buf[1] << 8);
-        }
-    }
-
-    /* For psedo_phy access, only support one robo switch*/
-    /* For Northstar, only one switch on SRAB interface */    
-    max_devices = (max_bustype == MAX_BUSTYPE) ? 1 : LINUX_BDE_MAX_SWITCH_DEVICES;
-
-    for (dev = 0; dev < max_devices; dev++) {
-        bde_ctrl_t *ctrl;
-        int match_idx, i;
-        unsigned short phyidl_nr; /* phyidl with revision stripped */        
-        uint16 model_id;
-        uint8 rev_id;
-        uint32 addr, len;
-        uint32 mlen;
-
-        if (_switch_ndevices >= LINUX_BDE_MAX_SWITCH_DEVICES) {
-            break;
-        }
-        buf[0] = buf[1] = 0;
-        ROBO_SPI_RREG(robo, dev, 0x10, 0x04, buf, (uint)2);
-        phyidh = buf[0] | (buf[1] << 8);
-
-        buf[0] = buf[1] = 0;
-        ROBO_SPI_RREG(robo, dev, 0x10, 0x06, buf, (uint)2);
-        phyidl = buf[0] | (buf[1] << 8);
-
-        /* Strip revision */
-        phyidl_nr = phyidl & 0xfff0;
-
-        match_idx = _spi_device_valid_check(phyidh, phyidl_nr, 1);
-        if (match_idx == -1) {
-            if (debug >= 1) gprintk("found %d robo device(s).\n", robo_switch);
-            break;
-        }
-
-        model_id = phyidl_nr;
-
-        if(_spi_id_table[match_idx].rev_info){
-            addr = _spi_id_table[match_idx].rev_info & 0xffff;
-            len = (_spi_id_table[match_idx].rev_info >> 16) & 0xf;
-            ROBO_SPI_RREG(robo, dev, (addr >> 8), (addr & 0xff), buf, (uint)len);
-            mlen = (_spi_id_table[match_idx].rev_info >> 20) & 0xf;
-            rev_id = 0;
-            for (i = 0; i < mlen; i++)
-                rev_id |= buf[i] << (i << 3);
-        } else {
-            rev_id = phyidl & 0xf;
-        }
-
-        gprintk("found robo device with %d:%04x:%04x:%04x:%02x\n",
-                dev, phyidh, phyidl, model_id, rev_id);
-
-        ROBO_SELECT_DEVICE(robo, phyidh, phyidl);
-
-        /* Match supported chips */
-        ctrl = _devices + _ndevices++;
-        _switch_ndevices++;
-
-        if (NULL == (ctrl->spi_device = (struct spi_dev *)
-                     KMALLOC(sizeof(struct spi_dev), GFP_KERNEL))) {
-            gprintk("no memory available");
-            return -ENOMEM;
-        }        
-        ctrl->dev_type = (BDE_SPI_DEV_TYPE | BDE_SWITCH_DEV_TYPE);
-        ctrl->spi_device->cid = dev;
-        ctrl->spi_device->part = model_id;
-        ctrl->spi_device->rev = rev_id;
-        ctrl->spi_device->robo = robo;
-        ctrl->spi_device->phyid_high = phyidh;
-        ctrl->spi_device->phyid_low = phyidl;
-        ctrl->bde_dev.device = model_id;
-        ctrl->bde_dev.rev = rev_id;
-        ctrl->bde_dev.base_address = (sal_vaddr_t)NULL;
-        ctrl->isr = NULL;
-        ctrl->isr_data = NULL;
-        robo_switch++;
-
-    }
-
-    return robo_switch;
-
-}
-
-int spi_device_found = 0;
-
-#endif /* IPROC_CMICD || SF3 */ 
-
-
-static int
-probe_robo_switch(void)
-{
-    int dev;
-    int max_devices, max_bustype;
-    uint8   buf[8];
-    unsigned short phyidh = 0, phyidl = 0;
-#if defined(KEYSTONE) 
-    uint32 spi_freq = 0;
-#endif
-#if defined(IPROC_CMICD)
-    sal_vaddr_t addr_base;
-    uint32  data_reg;
-#endif /* IPROC_CMICD */ 
-
-
-    spin_lock_init(&bus_lock);
-
-    if (_switch_ndevices) {
-    /*
-     * Currently skip probe robo if esw chips were found
-     * FIX this while combined plateform support.
-     */
-        return robo_switch;
-    }
-
-    /* Get Robo device handle */
-    if (robo == NULL) {
-        sbh = (void *)SOC_ATTACH(NULL);
-        if (sbh == NULL) {
-            return -ENODEV;
-        }
-    }
-
-#if defined(IPROC_CMICD) && defined(BCM_STARFIGHTER3_SUPPORT)
-    robo_switch = probe_robo_switch_iproc_spi();
-
-    if (robo_switch > 0) {
-        /* Robo switch found by SPI probe */ 
-        spi_device_found = 1;
-        gprintk("SPI device found, Skipping SRAB probe\n");
-        return robo_switch;
-    } else {
-        gprintk("SPI device NOT found, Probe SRAB probe\n");
-        ROBO_DETACH_SPI(robo);
-    }
-#endif
-
-    if (robo == NULL) {
-        robo = (void *)ROBO_ATTACH(sbh, 0);
-    }
-    if (robo == NULL) {
-        return -ENODEV;
-    }
-
-    max_bustype = MAX_BUSTYPE + 1;
-
-    while(_spi_device_valid_check(phyidh, 0, 0)) {
-        max_bustype --;
-        if(!max_bustype)
-            return -ENODEV;
-        ROBO_SWITCH_BUS(robo, max_bustype);
-        buf[0] = buf[1] = 0;
-        ROBO_RREG(robo, 0, 0x10, 0x04, buf, (uint)2);
-        phyidh = buf[0] | (buf[1] << 8);
-        /* re-try */
-        if ((phyidh == 0x0) || (phyidh == 0xffff)) {
-            ROBO_RREG(robo, 0, 0x10, 0x04, buf, (uint)2);
-            phyidh = buf[0] | (buf[1] << 8);
-        }
-    }
-
-    /* For psedo_phy access, only support one robo switch*/
-    /* For Northstar, only one switch on SRAB interface */    
-    max_devices = (max_bustype == MAX_BUSTYPE) ? 1 : LINUX_BDE_MAX_SWITCH_DEVICES;
-
-    for (dev = 0; dev < max_devices; dev++) {
-        bde_ctrl_t *ctrl;
-        int match_idx, i;
-        unsigned short phyidl_nr; /* phyidl with revision stripped */        
-        uint16 model_id;
-        uint8 rev_id;
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-        uint32 addr, len;
-#endif
-        uint32 mlen, op;
-
-        if (_switch_ndevices >= LINUX_BDE_MAX_SWITCH_DEVICES) {
-            break;
-        }
-        buf[0] = buf[1] = 0;
-        ROBO_RREG(robo, dev, 0x10, 0x04, buf, (uint)2);
-        phyidh = buf[0] | (buf[1] << 8);
-
-        buf[0] = buf[1] = 0;
-        ROBO_RREG(robo, dev, 0x10, 0x06, buf, (uint)2);
-        phyidl = buf[0] | (buf[1] << 8);
-
-        /* Strip revision */
-        phyidl_nr = phyidl & 0xfff0;
-
-        match_idx = _spi_device_valid_check(phyidh, phyidl_nr, 1);
-        if (match_idx == -1) {
-            if (debug >= 1) gprintk("found %d robo device(s).\n", robo_switch);
-            break;
-        }
-
-        if(_spi_id_table[match_idx].model_info){
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-            addr = _spi_id_table[match_idx].model_info & 0xffff;
-            len = (_spi_id_table[match_idx].model_info >> 16) & 0xf;
-#endif
-            ROBO_RREG(robo, dev, (addr >> 8), (addr & 0xff), buf, (uint)len);
-            mlen = (_spi_id_table[match_idx].model_info >> 20) & 0xf;
-            model_id = 0;
-            for (i = 0; i < mlen; i++)
-                model_id |= buf[i] << (i << 3);
-            op = (_spi_id_table[match_idx].model_info >> 28) & 0xf;
-            if(op == 1) {
-                model_id |= phyidl_nr;
-#if defined(IPROC_CMICD)                
-            } else if (op == 2) {
-                /* The package id of NS+ is determined by :  
-                 * Write 0 to 0x18012120 (PAXB_0_CONFIG_IND_ADDR)
-                 * Read 0x18012124 (PAX_B_CONFIG_IND_DATA), 
-                 * bits 31:16 will be the device id from OTP space 
-                 */
-#define     PAXB_ENUM_BASE                (0x18012000)
-#define     PAXB_CONFIG_IND_ADDR_OFFSET   (0x120)
-#define     PAXB_CONFIG_IND_DATA_OFFSET   (0x124)
-
-                addr_base = (sal_vaddr_t)IOREMAP(PAXB_ENUM_BASE, 0x1000);
-                if (!addr_base) {
-                    gprintk("ioremap of PAXB registers failed\n"); 
-                } else {
-                    writel(0x0, (uint32 *)(addr_base + 
-                                        PAXB_CONFIG_IND_ADDR_OFFSET)); 
-                    data_reg = readl((uint32 *)(addr_base + 
-                                        PAXB_CONFIG_IND_DATA_OFFSET));
-                    model_id = (data_reg >> 16);
-                    iounmap((void *)addr_base);
-
-                    /* 
-                     * Some model ID can't be determined by PCIE device ID
-                     * It needs to refer some OTP values.
-                     */
-                    robo_model_id_adjust_from_otp(robo, &model_id);                 
-                }
-                 
-#undef      PAXB_ENUM_BASE                
-#undef      PAXB_CONFIG_IND_ADDR_OFFSET
-#undef      PAXB_CONFIG_IND_DATA_OFFSET
-#endif /* IPROC_CMICD */
-            }
-        } else {
-            model_id = phyidl_nr;
-        }
-        if(_spi_id_table[match_idx].rev_info){
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-            addr = _spi_id_table[match_idx].rev_info & 0xffff;
-            len = (_spi_id_table[match_idx].rev_info >> 16) & 0xf;
-#endif
-            ROBO_RREG(robo, dev, (addr >> 8), (addr & 0xff), buf, (uint)len);
-            mlen = (_spi_id_table[match_idx].rev_info >> 20) & 0xf;
-            rev_id = 0;
-            for (i = 0; i < mlen; i++)
-                rev_id |= buf[i] << (i << 3);
-        } else {
-            rev_id = phyidl & 0xf;
-        }
-        gprintk("found robo device with %d:%04x:%04x:%04x:%02x\n",
-                dev, phyidh, phyidl, model_id, rev_id);
-
-        ROBO_SELECT_DEVICE(robo, phyidh, phyidl);
-
-        /* Match supported chips */
-        ctrl = _devices + _ndevices++;
-        _switch_ndevices++;
-
-        if (NULL == (ctrl->spi_device = (struct spi_dev *)
-                     KMALLOC(sizeof(struct spi_dev), GFP_KERNEL))) {
-            gprintk("no memory available");
-            return -ENOMEM;
-        }        
-        ctrl->dev_type = (BDE_SPI_DEV_TYPE | BDE_SWITCH_DEV_TYPE);
-        ctrl->spi_device->cid = dev;
-        ctrl->spi_device->part = model_id;
-        ctrl->spi_device->rev = rev_id;
-        ctrl->spi_device->robo = robo;
-        ctrl->spi_device->phyid_high = phyidh;
-        ctrl->spi_device->phyid_low = phyidl;
-        ctrl->bde_dev.device = model_id;
-        ctrl->bde_dev.rev = rev_id;
-        ctrl->bde_dev.base_address = (sal_vaddr_t)NULL;
-        ctrl->isr = NULL;
-        ctrl->isr_data = NULL;
-        robo_switch++;
-
-#if defined(KEYSTONE) 
-        spi_freq = _spi_id_table[match_idx].spifreq;
-#endif
-    }
-
-#if defined(KEYSTONE) 
-    /* Override the SPI frequency from user configuration */ 
-    if (spifreq != 0) {
-        spi_freq = spifreq;
-    }
-    if (spi_freq != 0) {
-        /*
-         * The underlying chip can support the SPI frequency
-         * higher than default (2MHz).
-         */
-        if (spi_freq != SPI_FREQ_DEFAULT) {
-            chipc_spi_set_freq(robo, 0, spi_freq); 
-        }
-    }
-#endif
-    return robo_switch;
-
-}
-
-#endif
 
 #if defined(BCM_METROCORE_LOCAL_BUS)
 static bde_ctrl_t*
@@ -3201,8 +2760,7 @@ map_local_bus(uint64_t addr, uint32_t size)
 {
     bde_ctrl_t *ctrl;
 
-    ctrl = _devices + _ndevices++;
-    _switch_ndevices++;
+    ctrl = _devices + _ndevices;
 
     /*
      * For now: use EB type as `local bus'
@@ -3217,111 +2775,12 @@ map_local_bus(uint64_t addr, uint32_t size)
     ctrl->bde_dev.base_address = (sal_vaddr_t)IOREMAP(addr, size);
     ctrl->phys_address = addr;
 
+    _bde_add_device();
     return(ctrl);
 }
 
 #define BME_REVISION_OFFSET     (0x0)
 
-#endif
-
-
-#ifdef BCM_METROCORE_LOCAL_BUS
-    /*
-     * SBX platform has both PCI- and local bus-attached devices
-     * The local bus devices have fixed address ranges (and don't
-     * support or require DMA), but are otherwise the same as PCI devices
-     */
-#define FPGA_IRQ                37
-#define FPGA_PHYS               0x100E0000
-#define BME_PHYS                0x100C0000
-#define SE_PHYS                 0x100D0000
-#define FPGA_SIZE               0x00004000
-#define BME_SIZE                0x00004000
-#define MAC0_PHYS               0x100B0000
-#define MAC1_PHYS               0x100B8000
-#define MAC_SIZE                0x800
-
-
-/*
- * Please refer to "Supervisor Fabric Module (SFM) Specification"
- * page 23 for the following registers.
- */
-#define FPGA_LC_POWER_DISABLE_OFFSET             0x4
-#define FPGA_LC_POWER_DISABLE_ENABLE_ALL_MASK    0x1e
-
-#define FPGA_LC_POWER_RESET_OFFSET               0x5
-#define FPGA_LC_POWER_RESET_ENABLE_ALL_MASK      0x1e
-
-#define FPGA_SW_SFM_MASTER_MODE_OFFSET           0x14
-#define FPGA_SW_SFM_MASTER_MODE_ENABLE_MASK      0x10
-
-
-static int
-probe_metrocore_local_bus(void) {
-    bde_ctrl_t *ctrl;
-    uint32_t dev_rev_id;
-    VOL uint8_t *fpga;
-
-    /*
-     * Write the FPGA on the fabric card, to let metrocore
-     * line cards out of reset.  We actually don't bother to determine whether
-     * the card is a line card or a fabric card because when we do
-     * this on the line cards, it has no effect.
-     */
-    fpga = (uint8_t *) IOREMAP(FPGA_PHYS, FPGA_SIZE);
-    fpga[FPGA_SW_SFM_MASTER_MODE_OFFSET]
-        |= FPGA_SW_SFM_MASTER_MODE_ENABLE_MASK;
-    fpga[FPGA_LC_POWER_DISABLE_OFFSET]
-        |= FPGA_LC_POWER_DISABLE_ENABLE_ALL_MASK;
-    fpga[FPGA_LC_POWER_RESET_OFFSET]
-        |= FPGA_LC_POWER_RESET_ENABLE_ALL_MASK;
-
-    ctrl = map_local_bus(BME_PHYS, BME_SIZE);
-
-    dev_rev_id =
-        *((uint32_t *)
-          (((uint8_t *) ctrl->bde_dev.base_address) + BME_REVISION_OFFSET));
-    ctrl->bde_dev.device = dev_rev_id >> 16;
-    ctrl->bde_dev.rev = (dev_rev_id & 0xFF);
-
-    if ((ctrl->bde_dev.device != BME3200_DEVICE_ID) &&
-    (ctrl->bde_dev.device != BCM88130_DEVICE_ID)) {
-        gprintk("probe_metrocore_local_bus: wrong BME type: "
-                "0x%x (vs 0x%x or 0x%x)\n",
-                ctrl->bde_dev.device, BME3200_DEVICE_ID, BCM88130_DEVICE_ID);
-        return -1;
-    }
-
-    ctrl->iLine = FPGA_IRQ;
-    ctrl->isr = NULL;
-    ctrl->isr_data = NULL;
-
-    /*
-     * <BME-- 64k --><SE -- 64k --><FPGA -- 64k -->
-     * We start from SE & include the FPGA, which is 128k
-     */
-    ctrl = map_local_bus(SE_PHYS, 128 * 1024);
-
-    dev_rev_id =
-        *((uint32_t *)
-          (((uint8_t *) ctrl->bde_dev.base_address) + BME_REVISION_OFFSET));
-    ctrl->bde_dev.device = dev_rev_id >> 16;
-    ctrl->bde_dev.rev = (dev_rev_id & 0xFF);
-
-    if ((ctrl->bde_dev.device != BME3200_DEVICE_ID) &&
-    (ctrl->bde_dev.device != BCM88130_DEVICE_ID)) {
-        gprintk("probe_metrocore_local_bus: wrong SE (BME) type: "
-                "0x%x (vs 0x%x)\n",
-                ctrl->bde_dev.device, BME3200_DEVICE_ID);
-        return -1;
-    }
-
-    ctrl->iLine = FPGA_IRQ;
-    ctrl->isr = NULL;
-    ctrl->isr_data = NULL;
-
-    return 0;
-}
 #endif
 
 #ifdef BCM_PLX9656_LOCAL_BUS
@@ -3345,8 +2804,7 @@ map_local_bus2(bde_ctrl_t *plx_ctrl, uint32_t dev_base, uint32_t size)
     uint8_t *addr;
     bde_ctrl_t *ctrl;
 
-    ctrl = _devices + _ndevices++;
-    _switch_ndevices++;
+    ctrl = _devices + _ndevices;
 
     /*
      * For now: use EB type as `local bus'
@@ -3368,13 +2826,11 @@ map_local_bus2(bde_ctrl_t *plx_ctrl, uint32_t dev_base, uint32_t size)
     ctrl->bde_dev.device = dev_rev_id >> 16;
     ctrl->bde_dev.rev = (dev_rev_id & 0xFF);
 
+
+    _bde_add_device();
+
     switch (ctrl->bde_dev.device) {
-    case BCM88130_DEVICE_ID:
-    case BME3200_DEVICE_ID:
-        break;
     default:
-        gprintk("wrong BME type: 0x%x (vs 0x%x or 0x%x)\n",
-                    ctrl->bde_dev.device, BME3200_DEVICE_ID, BCM88130_DEVICE_ID);
         return 0;
     }
     return(ctrl);
@@ -3424,143 +2880,8 @@ probe_plx_local_bus(void)
 
 #endif /* BCM_PLX9656_LOCAL_BUS */
 
-#if defined(BCM_EA_SUPPORT)
-#if defined(BCM_TK371X_SUPPORT)
-static void
-probe_tk371x_dev(void)
-{ 
-    bde_ctrl_t *ctrl;
-    int ea_uid=0;
-
-    /* eadevices is from the argument of insmod  */
-    for (ea_uid = 0; ea_uid < eadevices; ea_uid++) {
-        ctrl = _devices + _ndevices++;
-        _switch_ndevices++;
-        ctrl->dev_type = (BDE_MII_DEV_TYPE | BDE_SWITCH_DEV_TYPE);
-        ctrl->bde_dev.device = TK371X_DEVICE_ID;
-        ctrl->bde_dev.rev = 0x0;
-        ctrl->bde_dev.base_address = (sal_vaddr_t)NULL;
-        ctrl->iLine = 0;
-    }
-}
-#endif /* BCM_TK371X_SUPPORT*/
-#endif /* BCM_EA_SUPPORT */
 
 
-#if defined(BCM_ROBO_SUPPORT) 
-#if defined(IPROC_CMICD)
-struct chip_device_info {
-    uint32 cc_base;         /* Chip-common register base */
-    uint32 cc_size;         /* Chip-common register limit */
-    uint32 cid_reg_off;     /* Chip id register offset */
-};
-
-static struct chip_device_info _chip_table = {
-#if defined(IPROC_CMICD)
-    0x18000000, 0x00000300, 0x00000000
-#else
-    0,0,0
-#endif  
-};      
-
-struct gmac_device_info {
-    uint32 cid;             /* chip id */
-    uint32 rid;             /* revision id */
-    uint32 pid;             /* package id */
-        
-    uint32 gmac_dev_id;     /* gmac core device id */
-    uint32 gmac_base_addr;  /* gmac core base address */
-    int gmac_irq;           /* gmac irq number */
-};
-
-static struct gmac_device_info _gmac_table[] = {
-#if defined(IPROC_CMICD)
-    {BCM53010_CHIP_ID, 0, 0, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53012 */
-    {BCM53010_CHIP_ID, 0, 2, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53011 */
-    {BCM53010_CHIP_ID, 0, 1, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53010 */
-    {BCM53018_CHIP_ID, 0, 0, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53018 */
-    {BCM53018_CHIP_ID, 0, 2, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53017 */
-    {BCM53018_CHIP_ID, 0, 1, BCM53010_GMAC_ID, 0x18026000, 181}, /* BCM53019 */
-    {BCM53020_CHIP_ID, 0, 0, BCM53010_GMAC_ID, 0x18024000, 181}, /* BCM53022 */
-    {BCM53020_CHIP_ID, 4, 0, BCM53010_GMAC_ID, 0x18023000, 180}, /* BCM53022 */
-#endif
-    {0,0,0,0,0,0}
-};      
-
-static sal_vaddr_t _cca_base = 0;
-
-static int
-_gmac_dev_create(void) 
-{
-    bde_ctrl_t *ctrl;
-    uint32 gmac_base = 0;
-    uint32 offset = 0;
-    uint32 cca_cid;
-    uint32 cid, rid, pid;
-    int i = 0, found;
-
-    if (_chip_table.cc_base == 0) {
-        gprintk("Create GMAC device failed. Unable to identify CPU.\n");
-        return -1;
-    }
-
-    /* 1. Determine which CPU/GMAC configuration is now */
-    _cca_base = (sal_vaddr_t)IOREMAP(_chip_table.cc_base, _chip_table.cc_size);
-    cca_cid = readl((uint32 *)(_cca_base + _chip_table.cid_reg_off));
-
-    cid = cca_cid & CID_ID_MASK;
-    rid = (cca_cid & CID_REV_MASK) >> CID_REV_SHIFT;
-    pid = (cca_cid & CID_PKG_MASK) >> CID_PKG_SHIFT;
-
-    found = 0;
-    for (i = 0; ; i++) {
-        if (_gmac_table[i].cid == 0) {
-            /* End of table */
-            break;
-        }
-        if ((_gmac_table[i].cid == cid) && 
-            (_gmac_table[i].rid == rid) &&
-            (_gmac_table[i].pid == pid)) {
-            /* found */
-            found = 1;
-            break;
-        }
-    }
-    if (!found) {
-        gprintk("Create GMAC device failed. Unable to identify GMAC device.\n");
-    }
-
-    /* 2. Create GMAC device */
-    /* fill-in necessary information depends on the CPU/GMAC configuration */
-    if ((cid == BCM53010_CHIP_ID) || (cid == BCM53018_CHIP_ID) ||
-        (cid == BCM53020_CHIP_ID)) {
-        ctrl = _devices + _ndevices++;
-        _ether_ndevices++;
-
-        ctrl->dev_type |= BDE_ETHER_DEV_TYPE;
-        ctrl->dev_type |= BDE_PCI_DEV_TYPE;
-
-        ctrl->iLine = _gmac_table[i].gmac_irq;
-    
-        ctrl->be_pio = 0;
-    
-        ctrl->bde_dev.rev = _gmac_table[i].rid;
-        ctrl->bde_dev.device = _gmac_table[i].gmac_dev_id;
-    
-        gmac_base = 0x18000000;
-        offset = _gmac_table[i].gmac_base_addr - gmac_base;
-        ctrl->bde_dev.base_address = (sal_vaddr_t)IOREMAP(gmac_base, 0x300000);
-        ctrl->alt_base_addr = ctrl->bde_dev.base_address + offset;
-        ctrl->phys_address = gmac_base;
-    
-        ctrl->isr = NULL;
-        ctrl->isr_data = NULL;
-    }
-
-    return 0;
-}
-#endif
-#endif
 
 /*
  * Generic module functions
@@ -3580,8 +2901,12 @@ _gmac_dev_create(void)
 static int
 _init(void)
 {
-
 #ifdef IPROC_CMICD
+#ifdef CONFIG_OF
+    if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+        iproc_platform_driver_register(&iproc_cmicd_driver);
+    } else
+#endif
     if (iproc_has_cmicd()) {
         iproc_cmicd_get_memregion(&iproc_cmicd_resources[IPROC_CMICD_RES_MEM]);
         iproc_platform_driver_register(&iproc_cmicd_driver);
@@ -3601,13 +2926,6 @@ _init(void)
     /* Register our goodies */
     _device_driver.name = LINUX_KERNEL_BDE_NAME;
 
-#if defined(BCM_ROBO_SUPPORT) 
-#if defined(IPROC_CMICD) 
-    if (_gmac_dev_create()) {
-        return -ENODEV;
-    }
-#endif
-#endif /* defined (BCM_ROBO_SUPPORT)  */
 
     /* Configure MSI interrupt support */
     use_msi = usemsi;
@@ -3629,14 +2947,14 @@ _init(void)
     }
 #else
     if (use_msi > PCI_USE_INT_INTX) {
-        /* Warn if invalid configuration */
-        gprintk("MSI interrupts not supported by kernel\n");
-    }
+            /* Warn if invalid configuration */
+            gprintk("MSI interrupts not supported by kernel\n");
+        }
     use_msi = PCI_USE_INT_INTX;
 #endif /* CONFIG_PCI_MSI */
 
     if (unlikely(debug >= 1))
-        gprintk("%s(%d):use_mse = %d\n", __func__, __LINE__, use_msi);
+        gprintk("%s(%d):use_msi = %d\n", __func__, __LINE__, use_msi);
     if (spi_devid) {
         _spi_device_setup();
     } else {
@@ -3660,17 +2978,11 @@ _init(void)
 #endif
 #endif /* BCM_ICS */
 
-#ifdef BCM_ROBO_SUPPORT
-    probe_robo_switch();
-#endif
 
-#if defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT) || defined(BCM_DNX_SUPPORT) || defined(BCM_DNXF_SUPPORT)
+#ifdef BCM_SAND_SUPPORT
     sand_device_create();
 #endif
 
-#if defined(BCM_TK371X_SUPPORT)
-    probe_tk371x_dev();
-#endif
     /*
      * Probe for EB Bus devices.
      */
@@ -3686,41 +2998,6 @@ _init(void)
                     &eb_ba, &irq, &eb_rd16bit, &eb_wr16bit);
             _eb_device_create(eb_ba, irq, eb_rd16bit, eb_wr16bit);
             tok = strtok(NULL,",");
-        }
-    }
-
-    _dma_init(robo_switch);
-
-    /*
-     * In order to be backward compatible with the user mode BDE
-     * (specifically the interrupt IOCTLs) and the CM, switch devices
-     * *must* come first. If this is not the case (due to the probing
-     * order), we let the non-switch device(s) drop down to the end of
-     * the device array.
-     */
-    if (_switch_ndevices > 0) {
-        bde_ctrl_t tmp_dev;
-        int i, s = 0;
-
-        while (s < _switch_ndevices) {
-            if (_devices[s].dev_type & BDE_SWITCH_DEV_TYPE) {
-                s++;
-                continue;
-            }
-            tmp_dev = _devices[s];
-            for (i = s; i < _ndevices - 1; i++) {
-                _devices[i] = _devices[i+1];
-            }
-            _devices[i] = tmp_dev;
-        }
-    }
-
-    /* Initialize device locks */
-    if (_ndevices > 0) {
-        int i;
-
-        for (i = 0; i < _ndevices; i++) {
-            spin_lock_init(&_devices[i].lock);
         }
     }
 
@@ -3745,6 +3022,11 @@ _cleanup(void)
     _dma_cleanup();
 
 #ifdef IPROC_CMICD
+#ifdef CONFIG_OF
+    if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+        iproc_platform_driver_unregister(&iproc_cmicd_driver);
+    } else
+#endif
     if (iproc_has_cmicd()) {
 #ifdef CONFIG_OF
         if (!of_find_compatible_node(NULL, NULL, IPROC_CMICD_COMPATIBLE))
@@ -3756,24 +3038,6 @@ _cleanup(void)
     }
 #endif
 
-#if defined(BCM_ROBO_SUPPORT)
-#if defined(IPROC_CMICD)
-    if (_cca_base) {
-        iounmap((void *)_cca_base);
-    }
-#endif
-
-    if (robo) {
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-        robo_detach(robo);
-#endif /* KEYSTONE || IPROC_CMICD */
-    }
-    if (sbh) {
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    ai_soc_detach(sbh);
-#endif /* KEYSTONE || IPROC_CMICD */        
-    }
-#endif
     for (i = 0; i < _ndevices; i++) {
         bde_ctrl_t *ctrl = _devices + i;
 
@@ -3784,7 +3048,7 @@ _cleanup(void)
             }
         }
     }
-#if (defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT) || defined(BCM_DNX_SUPPORT) || defined(BCM_DNXF_SUPPORT)) && (defined(__DUNE_WRX_BCM_CPU__) || defined(__DUNE_GTO_BCM_CPU__))
+#if defined(BCM_SAND_SUPPORT) && (defined(__DUNE_WRX_BCM_CPU__) || defined(__DUNE_GTO_BCM_CPU__))
     if (cpu_address) { /* unmap CPU card MMIO */
         iounmap(cpu_address);
         cpu_address = NULL;
@@ -3843,7 +3107,10 @@ _pprint(void)
             continue;
         }
         if (ctrl->dev_type & BDE_PCI_DEV_TYPE) {
-            pprintf("PCI device 0x%x:0x%x:%d:0x%.8lx:0x%.8lx:%d%s\n",
+            pprintf("PCI device %02x:%02x.%x 0x%x:0x%x:%d:0x%.8lx:0x%.8lx:%d%s\n",
+                    (unsigned int)ctrl->pci_device->bus->number,
+                    PCI_SLOT(ctrl->pci_device->devfn),
+                    PCI_FUNC(ctrl->pci_device->devfn),
                     ctrl->pci_device->vendor,
                     ctrl->pci_device->device,
                     ctrl->bde_dev.rev,
@@ -3884,40 +3151,6 @@ _pprint(void)
     return 0;
 }
 
-#if USE_LINUX_BDE_MMAP
-/*
- * Some kernels (mainly x86) prevent mapping of kernel RAM memory to
- * user space via the /dev/mem device. The function below provides a
- * backdoor to mapping the DMA pool to user space via the
- * /dev/linux-kernel-bde device.
- */
-static int _mmap(struct file *filp, struct vm_area_struct *vma)
-{
-    unsigned long phys_addr = vma->vm_pgoff << PAGE_SHIFT;
-    unsigned long size = vma->vm_end - vma->vm_start;
-
-    if(!_dma_range_valid(phys_addr, size)) {
-        return -EINVAL;
-    }
-
-#ifdef REMAP_DMA_NONCACHED
-    vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-#endif
-
-    if (remap_pfn_range(vma,
-                        vma->vm_start,
-                        vma->vm_pgoff,
-                        size,
-                        vma->vm_page_prot)) {
-        gprintk("Failed to mmap phys range 0x%lx-0x%lx to 0x%lx-0x%lx\n",
-                phys_addr, phys_addr + size, vma->vm_start,vma->vm_end);
-        return -EAGAIN;
-    }
-
-    return 0;
-}
-#endif /* USE_LINUX_BDE_MMAP */
-
 /* Workaround for broken Busybox/PPC insmod */
 static char _modname[] = LINUX_KERNEL_BDE_NAME;
 
@@ -3927,9 +3160,7 @@ static gmodule_t _gmodule = {
     init: _init,
     cleanup: _cleanup,
     pprint: _pprint,
-#if USE_LINUX_BDE_MMAP
-    mmap: _mmap,
-#endif
+    mmap: _dma_mmap,
 };
 
 gmodule_t *
@@ -4225,14 +3456,18 @@ _interrupt_connect(int d,
         if (ctrl->use_msi == PCI_USE_INT_MSIX) {
             int i;
             for (i = 0; i < ctrl->msix_cnt; i++) {
-                 ret = request_irq(ctrl->entries[i].vector, _isr,
-                       irq_flags, LINUX_KERNEL_BDE_NAME, ctrl);
+                 if (unlikely(debug >= 1)) {
+                     gprintk("%s(%d):device# = %d, irq = %d\n",
+                         __func__, __LINE__, d, ctrl->entries[i].vector);
+                 }
+                 ret = request_irq(ctrl->entries[i].vector, (irq_handler_t)_isr, 0,
+                                   LINUX_KERNEL_BDE_NAME, ctrl);
                  if (ret < 0)
                      break;
             }
             if (ret < 0) {
                 while (i >= 0)
-                    free_irq(ctrl->entries[i--].vector, ctrl->pci_device);
+                    free_irq(ctrl->entries[i--].vector, ctrl);
 
                 goto err_disable_msi;
             }
@@ -4240,16 +3475,39 @@ _interrupt_connect(int d,
         else
 #endif
         {
-            ret = request_irq(ctrl->iLine, _isr, irq_flags,
+#if defined(IPROC_CMICD) && defined(CONFIG_OF)
+            if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+                int i, j;
+                for (i = 0; i < IHOST_CMICX_MAX_INTRS; i++) {
+                    if (unlikely(debug >= 1))
+                        gprintk("%s(%d):device# = %d, request_irq(%d)\n",
+                            __func__, __LINE__, d, iproc_cmicx_irqs[i]);
+                    ret = request_irq(iproc_cmicx_irqs[i], (irq_handler_t)_isr,
+                            irq_flags, LINUX_KERNEL_BDE_NAME, ctrl);
+                    if (ret < 0) {
+                        gprintk("request_irq(%d) failed(%d)\n", iproc_cmicx_irqs[i], ret);
+                        break;
+                    }
+                }
+                if (ret < 0) {
+                    for (j = 0; j < i; j++) {
+                        free_irq(iproc_cmicx_irqs[j], ctrl);
+                    }
+                    goto err_disable_msi;
+                }
+            } else
+#endif
+            {
+                ret = request_irq(ctrl->iLine, _isr, irq_flags,
                        LINUX_KERNEL_BDE_NAME, ctrl);
-            if (ret < 0)
-                goto err_disable_msi;
+                if (ret < 0)
+                    goto err_disable_msi;
 
-            if (unlikely(debug >= 1))
-                gprintk("%s(%d):device# = %d, \
-                         irq_flags = %lu, irq = %d\n",
+                if (unlikely(debug >= 1))
+                    gprintk("%s(%d):device# = %d, irq_flags = %lu, irq = %d\n",
                          __func__, __LINE__, d,
                          irq_flags, ctrl->pci_device ? ctrl->pci_device->irq : ctrl->iLine);
+            }
         }
     }
     return 0;
@@ -4261,12 +3519,12 @@ err_disable_msi:
 msi_exit:
 #endif
      gprintk("could not request IRQ\n");
-     ctrl->isr = NULL;
-     ctrl->isr_data = NULL;
-     ctrl->isr2 = NULL;
-     ctrl->isr2_data = NULL;
+            ctrl->isr = NULL;
+            ctrl->isr_data = NULL;
+            ctrl->isr2 = NULL;
+            ctrl->isr2_data = NULL;
 
-    return -1;
+            return -1;
 }
 
 static int
@@ -4328,10 +3586,27 @@ _interrupt_disconnect(int d)
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,2,84))
         if (ctrl->use_msi >= PCI_USE_INT_MSIX) {
             int i;
-            for (i = 0; i < ctrl->msix_cnt; i++)
-                free_irq(ctrl->entries[i].vector, ctrl->pci_device);
+            for (i = 0; i < ctrl->msix_cnt; i++) {
+                if (unlikely(debug > 1)) {
+                     gprintk("%s(%d):device# = %d, irq = %d\n",
+                         __func__, __LINE__, d, ctrl->entries[i].vector);
+                }
+                free_irq(ctrl->entries[i].vector, ctrl);
+            }
         }
         else
+#endif
+#if defined(IPROC_CMICD) && defined(CONFIG_OF)
+        if (of_find_compatible_node(NULL, NULL, IPROC_CMICX_COMPATIBLE)) {
+            int i;
+            for (i = 0; i < IHOST_CMICX_MAX_INTRS; i++) {
+                if (unlikely(debug > 1)) {
+                    gprintk("%s(%d):device# = %d, free_irq(%d)\n",
+                            __func__, __LINE__, d, iproc_cmicx_irqs[i]);
+                }
+                free_irq(iproc_cmicx_irqs[i], ctrl);
+            }
+        } else
 #endif
         {
             free_irq(ctrl->iLine, ctrl);
@@ -4385,6 +3660,9 @@ _iproc_read(int d, uint32_t addr)
     }
 
     if (_devices[d].dev_type & BDE_AXI_DEV_TYPE) {
+        if (IHOST_GICD_REG_ADDR_VALID(d, addr)) {
+            return readl(IHOST_GICD_REG_ADDR_REMAP(d, addr));
+        }
         return _iproc_ihost_read(d, addr);
     }
 
@@ -4405,6 +3683,10 @@ _iproc_write(int d, uint32_t addr, uint32_t data)
     }
 
     if (_devices[d].dev_type & BDE_AXI_DEV_TYPE) {
+        if (IHOST_GICD_REG_ADDR_VALID(d, addr)) {
+            writel(data, IHOST_GICD_REG_ADDR_REMAP(d, addr));
+            return 0;
+        }
         return _iproc_ihost_write(d, addr, data);
     }
 
@@ -4475,126 +3757,7 @@ _get_cmic_ver(int d ,  uint32_t *ver)
     return -1;
 }
 
-#ifdef BCM_ROBO_SUPPORT
-#define SOC_ROBO_PAGE_BP        8    /* for Robo Chip only */
-
-#if defined(IPROC_CMICD)
-extern int ccb_mii_read(int dev_type, int phy_addr, int reg_off, uint16 *data);
-extern int ccb_mii_write(int dev_type, int phy_addr, int reg_off, uint16 data);
-
-/* device type */
-#define MII_DEV_LOCAL 0
-#define MII_DEV_EXT   1
-#endif
-
-static int
-_spi_read(int d, uint32 addr, uint8 *buf, int len)
-{
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    bde_ctrl_t *ctrl;
-    uint8 page, offset;
-#endif
-#if defined(IPROC_CMICD)
-    int rv = 0;
-    uint16 value = 0;
-#endif
-
-    if (!VALID_DEVICE(d)) {
-        return -1;
-    }
-
-    if (!(_devices[d].dev_type & BDE_SPI_DEV_TYPE)) {
-        gprintk("_spi_read: Not SPI device %d, type %x\n",
-                d, _devices[d].dev_type);
-        return -1;
-    }
-
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    ctrl = _devices + d;
-#endif
-
-#if defined(IPROC_CMICD)
-    if (addr & SOC_EXTERNAL_PHY_BUS_CPUMDIO) {
-        rv = ccb_mii_read(MII_DEV_EXT, (addr >> 8) & 0xff, addr & 0xff, &value);
-        memcpy(buf, &value, 2);
-        return rv;
-    }
-#endif
-
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    page = (addr >> SOC_ROBO_PAGE_BP) & 0xFF;
-    offset = addr & 0xFF;
-#endif
-
-#if defined(IPROC_CMICD) && defined(BCM_STARFIGHTER3_SUPPORT)
-    if (spi_device_found) {
-        ROBO_SPI_RREG(ctrl->spi_device->robo, ctrl->spi_device->cid,
-                  page, offset, buf, (uint)len);
-    } else
-#endif
-    {
-        ROBO_RREG(ctrl->spi_device->robo, ctrl->spi_device->cid,
-                  page, offset, buf, (uint)len);
-    }
-
-    return 0;
-}
-
-static int
-_spi_write(int d, uint32 addr, uint8 *buf, int len)
-{
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    bde_ctrl_t *ctrl;
-    uint8 page, offset;
-#endif
-#if defined(IPROC_CMICD)
-    int rv = 0;
-    uint16 value = 0;
-#endif
-    if (!VALID_DEVICE(d)) {
-        return -1;
-    }
-
-    if (!(_devices[d].dev_type & BDE_SPI_DEV_TYPE)) {
-        gprintk("_spi_write: Not SPI device %d, type %x\n",
-                d, _devices[d].dev_type);
-        return -1;
-    }
-
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    ctrl = _devices + d;
-#endif
-
-#if defined(IPROC_CMICD)
-    if (addr & SOC_EXTERNAL_PHY_BUS_CPUMDIO) {
-        memcpy(&value, buf, 2);
-        rv = ccb_mii_write(MII_DEV_EXT, (addr >> 8) & 0xff, addr & 0xff, value);
-        return rv;
-    }
-#endif
-
-#if defined(KEYSTONE) || defined(IPROC_CMICD)
-    page = (addr >> SOC_ROBO_PAGE_BP) & 0xFF;
-    offset = addr & 0xFF;
-#endif
-
-#if defined(IPROC_CMICD) && defined(BCM_STARFIGHTER3_SUPPORT)
-    if (spi_device_found) {
-        ROBO_SPI_WREG(ctrl->spi_device->robo, ctrl->spi_device->cid,
-                  page, offset, buf, (uint)len);
-    } else 
-#endif
-    {
-        ROBO_WREG(ctrl->spi_device->robo, ctrl->spi_device->cid,
-                  page, offset, buf, (uint)len);
-    }
-
-    return 0;
-}
-
-#endif
-
-#if defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT) || defined(BCM_DNX_SUPPORT) || defined(BCM_DNXF_SUPPORT)
+#ifdef BCM_SAND_SUPPORT
 int
 lkbde_cpu_write(int d, uint32 addr, uint32 *buf)
 {
@@ -4702,7 +3865,7 @@ lkbde_cpu_pci_register(int d)
     case BCM88380_DEVICE_ID:
     case BCM88381_DEVICE_ID:
     case BCM88680_DEVICE_ID:
-    case BCM88690_DEVICE_ID:
+    case BCM88800_DEVICE_ID:
     case BCM88470_DEVICE_ID:
     case BCM88470P_DEVICE_ID:
     case BCM88471_DEVICE_ID:
@@ -4714,6 +3877,7 @@ lkbde_cpu_pci_register(int d)
     case BCM88270_DEVICE_ID:
     case BCM88272_DEVICE_ID:
     case BCM88273_DEVICE_ID:
+    case BCM88274_DEVICE_ID:
     case BCM88278_DEVICE_ID:
     case BCM8206_DEVICE_ID:
     case BCM88350_DEVICE_ID:
@@ -4750,6 +3914,22 @@ lkbde_cpu_pci_register(int d)
     default:
         break;
     }
+
+#ifdef BCM_DNX_SUPPORT
+    /*All Jericho 2 devices from 0x8690 to 0x869F*/
+    if (SOC_IS_JERICHO_2_TYPE(ctrl->bde_dev.device)) {
+        /* Fix bar 0 address */ /* FIXME: write full phy address */
+        pci_write_config_byte(ctrl->pci_device, 0x12, 0x10);
+        pci_write_config_byte(ctrl->pci_device, 0x13, 0x60);
+
+        /*
+         * For DMA transactions - set Max_Payload_Size and
+         * Max_Read_Request_Size to 128 bytes.
+         */
+        pci_write_config_byte(ctrl->pci_device, 0xb5, 0x0c);
+        pci_write_config_byte(ctrl->pci_device, 0xb4, 0x0);
+    }
+#endif
 
     /* Redo ioremap */
     if (ctrl->bde_dev.base_address) {
@@ -4804,7 +3984,7 @@ lkbde_mem_read(int d, uint32 addr, uint32 *buf)
     return 0;
 }
 LKM_EXPORT_SYM(lkbde_mem_read);
-#endif /* defined(BCM_PETRA_SUPPORT) */
+#endif /* BCM_SAND_SUPPORT */
 
 static ibde_t _ibde = {
     name: _name,
@@ -4824,13 +4004,9 @@ static ibde_t _ibde = {
     interrupt_disconnect: _interrupt_disconnect,
     l2p: _l2p,
     p2l: _p2l,
-#if defined(BCM_ROBO_SUPPORT)
-    spi_read: _spi_read,
-    spi_write: _spi_write,
-#else
+
     NULL,
     NULL,
-#endif /* defined(BCM_ROBO_SUPPORT) */
     iproc_read: _iproc_read,
     iproc_write: _iproc_write,
     get_cmic_ver: _get_cmic_ver,
@@ -5082,11 +4258,12 @@ int
 lkbde_irq_mask_set(int d, uint32_t addr, uint32_t mask, uint32_t fmask)
 {
     bde_ctrl_t *ctrl;
-    int isr2_dev;
+    int isr2_dev, iproc_reg;
     unsigned long flags;
 
     isr2_dev = d & LKBDE_ISR2_DEV;
-    d &= ~LKBDE_ISR2_DEV;
+    iproc_reg = d & LKBDE_IPROC_REG;
+    d &= ~(LKBDE_ISR2_DEV | LKBDE_IPROC_REG);
 
     if (!VALID_DEVICE(d)) {
         return -1;
@@ -5105,7 +4282,12 @@ lkbde_irq_mask_set(int d, uint32_t addr, uint32_t mask, uint32_t fmask)
         /* This is the primary interrupt handler */
         ctrl->imask = mask & ~ctrl->fmask;
     }
-    _write(d, addr, ctrl->imask | ctrl->imask2);
+
+    if (iproc_reg) {
+        _iproc_write(d, addr, ctrl->imask | ctrl->imask2);
+    } else {
+        _write(d, addr, ctrl->imask | ctrl->imask2);
+    }
 
     spin_unlock_irqrestore(&ctrl->lock, flags);
 
@@ -5130,13 +4312,13 @@ lkbde_irq_mask_get(int d, uint32_t *mask, uint32_t *fmask)
 {
     bde_ctrl_t *ctrl;
 
-    d &= ~LKBDE_ISR2_DEV;
+    d &= ~(LKBDE_ISR2_DEV | LKBDE_IPROC_REG);
 
     if (!VALID_DEVICE(d)) {
         return -1;
     }
 
-    if (mask == NULL) {
+    if (mask == NULL || fmask == NULL) {
         return -1;
     }
 
@@ -5144,10 +4326,15 @@ lkbde_irq_mask_get(int d, uint32_t *mask, uint32_t *fmask)
 
     *fmask = ctrl->fmask;
     *mask = ctrl->imask | ctrl->imask2;
-    
+
     return 0;
 }
 
+int
+lkbde_get_num_devices(int type)
+{
+    return _num_devices(type);
+}
 
 /*
  * Export functions
@@ -5166,7 +4353,7 @@ LKM_EXPORT_SYM(lkbde_dev_state_set);
 LKM_EXPORT_SYM(lkbde_dev_state_get);
 LKM_EXPORT_SYM(lkbde_dev_instid_set);
 LKM_EXPORT_SYM(lkbde_dev_instid_get);
-#if (defined(BCM_PETRA_SUPPORT) || defined(BCM_DFE_SUPPORT))
+#ifdef BCM_SAND_SUPPORT
 LKM_EXPORT_SYM(lkbde_cpu_write);
 LKM_EXPORT_SYM(lkbde_cpu_read);
 LKM_EXPORT_SYM(lkbde_cpu_pci_register);

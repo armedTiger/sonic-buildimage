@@ -1,4 +1,5 @@
-FROM docker-config-engine
+{% from "dockers/dockerfile-macros.j2" import install_debian_packages, install_python_wheels, copy_files %}
+FROM docker-config-engine-stretch
 
 ARG docker_container_name
 RUN [ -f /etc/rsyslog.conf ] && sed -ri "s/%syslogtag%/$docker_container_name#%syslogtag%/;" /etc/rsyslog.conf
@@ -9,27 +10,24 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Update apt's cache of available packages
 RUN apt-get update
 
-# Install radvd Debian package
-RUN apt-get -y install radvd
-
 {% if docker_router_advertiser_debs.strip() -%}
 # Copy built Debian packages
-{%- for deb in docker_router_advertiser_debs.split(' ') %}
-COPY debs/{{ deb }} debs/
-{%- endfor %}
+{{ copy_files("debs/", docker_router_advertiser_debs.split(' '), "/debs/") }}
 
 # Install built Debian packages and implicitly install their dependencies
-{%- for deb in docker_router_advertiser_debs.split(' ') %}
-RUN dpkg_apt() { [ -f $1 ] && { dpkg -i $1 || apt-get -y install -f; } || return 1; }; dpkg_apt debs/{{ deb }}
-{%- endfor %}
+{{ install_debian_packages(docker_router_advertiser_debs.split(' ')) }}
 {%- endif %}
 
 # Clean up
-RUN apt-get clean -y; apt-get autoclean -y; apt-get autoremove -y
-RUN rm -rf /debs
+RUN apt-get clean -y        && \
+    apt-get autoclean -y    && \
+    apt-get autoremove -y   && \
+    rm -rf /debs
 
 COPY ["start.sh", "/usr/bin/"]
 COPY ["docker-router-advertiser.supervisord.conf", "/etc/supervisor/conf.d/"]
-COPY ["radvd.conf.j2", "/usr/share/sonic/templates/"]
+COPY ["radvd.conf.j2", "wait_for_intf.sh.j2", "/usr/share/sonic/templates/"]
+COPY ["files/supervisor-proc-exit-listener", "/usr/bin"]
+COPY ["critical_processes", "/etc/supervisor"]
 
 ENTRYPOINT ["/usr/bin/supervisord"]

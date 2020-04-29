@@ -1,18 +1,17 @@
 /*
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to
- * you under the terms of the GNU General Public License version 2 (the
- * "GPL"), available at http://www.broadcom.com/licenses/GPLv2.php,
- * with the following added to such license:
+ * Copyright 2017 Broadcom
  * 
- * As a special exception, the copyright holders of this software give
- * you permission to link this software with independent modules, and to
- * copy and distribute the resulting executable under terms of your
- * choice, provided that you also meet, for each linked independent
- * module, the terms and conditions of the license of that module.  An
- * independent module is a module which is not derived from this
- * software.  The special exception does not apply to any modifications
- * of the software.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2, as
+ * published by the Free Software Foundation (the "GPL").
+ * 
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License version 2 (GPLv2) for more details.
+ * 
+ * You should have received a copy of the GNU General Public License
+ * version 2 (GPLv2) along with this source code.
  */
 /*
  * $Id: $
@@ -31,6 +30,8 @@
 #define BAR0_PAXB_CONFIG_IND_ADDR               0x2120
 #define BAR0_PAXB_CONFIG_IND_DATA               0x2124
 
+#define PAXB_0_CMICD_TO_PCIE_INTR_EN            0x2380
+
 #define BAR0_PAXB_IMAP0_0                       (0x2c00)
 #define BAR0_PAXB_IMAP0_1                       (0x2c04)
 #define BAR0_PAXB_IMAP0_2                       (0x2c08)
@@ -41,6 +42,8 @@
 #define BAR0_PAXB_OARR_2_UPPER                  0x2d64
 #define BAR0_DMU_PCU_PCIE_SLAVE_RESET_MODE      0x7024
 
+#define PAXB_0_FUNC0_IMAP1_3                    0x2d88
+
 /* Force byte pointer for offset adjustments */
 #define ROFFS(_ptr, _offset) ((unsigned char*)(_ptr) + (_offset))
 
@@ -48,6 +51,7 @@
 #define PAXB_CONFIG_IND_ADDRr_PROTOCOL_LAYERf_MASK      0x3
 #define PAXB_CONFIG_IND_ADDRr_ADDRESSf_SHFT             0
 #define PAXB_CONFIG_IND_ADDRr_ADDRESSf_MASK             0x7ff
+#define PAXB_0_FUNC0_IMAP1_3_ADDR_SHIFT                 20
 
 /* Register value set/get by field */
 #define REG_FIELD_SET(_r, _f, _r_val, _f_val) \
@@ -145,12 +149,14 @@ shbde_iproc_config_init(shbde_iproc_config_t *icfg,
         icfg->dma_hi_bits = 0x2;
         break;
     case 0xb560: /* Apache */
+    case 0xb670: /* MO */
     case 0xb760: /* Maverick */
         icfg->iproc_ver = 0xB;
         break;
     case 0xb160: /* Hurricane3 */
-    case 0x8440: /* Wolfhound2 */
+    case 0x8440: /* Buckhound2 */
     case 0x8430: /* Foxhound2 */
+    case 0x8540: /* Wolfhound2 */
         icfg->iproc_ver = 10;
         icfg->dma_hi_bits = 0x2;
         break;
@@ -276,7 +282,6 @@ shbde_iproc_paxb_init(shbde_hal_t *shbde, void *iproc_regs,
         iproc32_write(shbde, reg, 0x1);
         reg = ROFFS(iproc_regs, BAR0_PAXB_OARR_2_UPPER);
         iproc32_write(shbde, reg, icfg->dma_hi_bits);
-
         /* Configure MSI interrupt page */
         if (icfg->use_msi) {
             reg = ROFFS(iproc_regs, BAR0_PAXB_OARR_FUNC0_MSI_PAGE);
@@ -284,6 +289,27 @@ shbde_iproc_paxb_init(shbde_hal_t *shbde, void *iproc_regs,
             iproc32_write(shbde, reg, data | 0x1);
         }
     }
+
+    /* Configure MSIX interrupt page, only need for iproc ver == 0x10 */
+    if ((icfg->use_msi == 2) && (icfg->iproc_ver == 0x10)) {
+        unsigned int mask = (0x1 << PAXB_0_FUNC0_IMAP1_3_ADDR_SHIFT) - 1;
+        reg = ROFFS(iproc_regs, PAXB_0_FUNC0_IMAP1_3);
+        data = iproc32_read(shbde, reg);
+        data &= mask;
+        data |= 0x410 << PAXB_0_FUNC0_IMAP1_3_ADDR_SHIFT;
+        iproc32_write(shbde, reg, data);
+    }
+
+    /* Disable INTx interrupt if MSI/MSIX is selected */
+    reg = ROFFS(iproc_regs, PAXB_0_CMICD_TO_PCIE_INTR_EN);
+    data = iproc32_read(shbde, reg);
+    if (icfg->use_msi) {
+        data &= ~0x1;
+    } else {
+        data |= 0x1;
+    }
+    iproc32_write(shbde, reg, data);
+
     return pci_num;
 }
 
@@ -314,19 +340,20 @@ shbde_iproc_pci_read(shbde_hal_t *shbde, void *iproc_regs,
     /* Sub-window size is 0x1000 (4K) */
     subwin_base = (addr & ~0xfff);
 
-    if((icfg->cmic_ver >= 4) && (subwin_base == 0x18013000)) {
+    if((icfg->cmic_ver >= 4) &&
+       ((subwin_base == 0x10231000) || (subwin_base == 0x18013000))) {
         /* Route the INTC block access through IMAP0_6 */
         reg = ROFFS(iproc_regs, 0x6000 + (addr & 0xfff));
     } else {
-        /* Update base address for sub-window 7 */
+    /* Update base address for sub-window 7 */
         subwin_base |= 1; /* Valid bit */
-        reg = ROFFS(iproc_regs, BAR0_PAXB_IMAP0_7);
-        iproc32_write(shbde, reg, subwin_base);
+    reg = ROFFS(iproc_regs, BAR0_PAXB_IMAP0_7);
+    iproc32_write(shbde, reg, subwin_base);
         /* Read it to make sure the write actually goes through */
         subwin_base = iproc32_read(shbde, reg);
 
-        /* Read register through sub-window 7 */
-        reg = ROFFS(iproc_regs, 0x7000 + (addr & 0xfff));
+    /* Read register through sub-window 7 */
+    reg = ROFFS(iproc_regs, 0x7000 + (addr & 0xfff));
     }
 
     return iproc32_read(shbde, reg);
@@ -360,19 +387,20 @@ shbde_iproc_pci_write(shbde_hal_t *shbde, void *iproc_regs,
     /* Sub-window size is 0x1000 (4K) */
     subwin_base = (addr & ~0xfff);
 
-    if((icfg->cmic_ver >= 4) && (subwin_base == 0x18013000)) {
+    if((icfg->cmic_ver >= 4) &&
+       ((subwin_base == 0x10231000) || (subwin_base == 0x18013000))) {
         /* Route the INTC block access through IMAP0_6 */
         reg = ROFFS(iproc_regs, 0x6000 + (addr & 0xfff));
     } else {
-        /* Update base address for sub-window 7 */
+    /* Update base address for sub-window 7 */
         subwin_base |= 1; /* Valid bit */
-        reg = ROFFS(iproc_regs, BAR0_PAXB_IMAP0_7);
-        iproc32_write(shbde, reg, subwin_base);
+    reg = ROFFS(iproc_regs, BAR0_PAXB_IMAP0_7);
+    iproc32_write(shbde, reg, subwin_base);
         /* Read it to make sure the write actually goes through */
         subwin_base = iproc32_read(shbde, reg);
 
         /* Read register through sub-window 7 */
-        reg = ROFFS(iproc_regs, 0x7000 + (addr & 0xfff));
+    reg = ROFFS(iproc_regs, 0x7000 + (addr & 0xfff));
     }
 
     iproc32_write(shbde, reg, data);
